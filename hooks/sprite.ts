@@ -71,15 +71,11 @@ const wave = (t: number, period: number) => 0.5 - 0.5 * Math.cos((2 * Math.PI * 
 // Blink for 140ms every few seconds, at a beat that doesn't look mechanical.
 export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100) < 120
 
-export function sprite(mood: Mood, t: number, level: number): Grid {
-  const { body, edge } = formFor(level)
-  const rhythm = RHYTHM[mood]
-  const phase = wave(t, rhythm.period)
-  const lift = rhythm.still ? 0 : phase > 0.5 ? 1 : 0
-  const dx = rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0
-  const blink = isBlinking(t)
-  const odd = Math.floor(t / 350) % 2 === 1
+type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; withBody?: boolean; withExtras?: boolean }
 
+// One still frame. The terminal animates by drawing many of these; the desktop SVG layers a few.
+export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, withBody = true, withExtras = true }: Pose = {}): Grid {
+  const { body, edge } = formFor(level)
   const eyes: Eyes =
     mood === 'happy' || mood === 'loved' ? 'happy'
     : mood === 'sleepy' ? 'closed'
@@ -97,16 +93,31 @@ export function sprite(mood: Mood, t: number, level: number): Grid {
   }
   const paint = { o: edge, b: body, p: BLUSH, k: INK, w: WHITE, r: TONGUE } as const
 
-  BODY.forEach((row, y) => [...row].forEach((c, x) => c !== '.' && put(ox + x, oy + y, paint[c as keyof typeof paint])))
-  for (const col of [2, 5]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
-  for (const [x, y, c] of MOUTHS[mouth]) put(ox + x, oy + y, paint[c])
-  if (level >= 10) for (const x of [2, 3, 4, 5]) put(ox + x, oy, x === 2 || x === 5 ? GOLD : SPARK) // a crown along the top edge
-
-  if (mood === 'happy') for (const [x, y] of odd ? [[0, 1], [9, 3]] : [[9, 0], [0, 4]]) put(x!, y!, SPARK)
-  if (mood === 'oops') put(9, 2 + (odd ? 1 : 0), SWEAT)
-  if (mood === 'sleepy') put(odd ? 9 : 8, odd ? 0 : 1, ZZZ)
-  if (mood === 'loved') for (const [x, y] of odd ? [[8, 0], [9, 1]] : [[0, 0], [1, 1]]) put(x!, y!, HEART)
+  if (withBody) {
+    BODY.forEach((row, y) => [...row].forEach((c, x) => c !== '.' && put(ox + x, oy + y, paint[c as keyof typeof paint])))
+    for (const col of [2, 5]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
+    for (const [x, y, c] of MOUTHS[mouth]) put(ox + x, oy + y, paint[c])
+    if (level >= 10) for (const x of [2, 3, 4, 5]) put(ox + x, oy, x === 2 || x === 5 ? GOLD : SPARK) // a crown along the top edge
+  }
+  if (withExtras) {
+    if (mood === 'happy') for (const [x, y] of odd ? [[0, 1], [9, 3]] : [[9, 0], [0, 4]]) put(x!, y!, SPARK)
+    if (mood === 'oops') put(9, 2 + (odd ? 1 : 0), SWEAT)
+    if (mood === 'sleepy') put(odd ? 9 : 8, odd ? 0 : 1, ZZZ)
+    if (mood === 'loved') for (const [x, y] of odd ? [[8, 0], [9, 1]] : [[0, 0], [1, 1]]) put(x!, y!, HEART)
+  }
   return grid
+}
+
+// The frame at time t: bob or shake on the mood's rhythm, blink now and then, twinkle the extras.
+export function sprite(mood: Mood, t: number, level: number): Grid {
+  const rhythm = RHYTHM[mood]
+  const phase = wave(t, rhythm.period)
+  return draw(mood, level, {
+    lift: rhythm.still || rhythm.shake ? 0 : phase > 0.5 ? 1 : 0,
+    dx: rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0,
+    blink: isBlinking(t),
+    odd: Math.floor(t / 350) % 2 === 1,
+  })
 }
 
 export function mix(a: number, b: number, t: number): number {
@@ -147,4 +158,43 @@ export function toRuns(grid: Grid): Run[][] {
     rows.push(runs)
   }
   return rows
+}
+
+// Desktop: one SVG with the motion built in, so it animates without redraws. The body glides on
+// an eased curve (smoother than whole pixels), blinks and twinkles switch layers, and a mood change
+// fades the previous pose out. Every animated layer rests where a still image should be, so a
+// surface that ignores SMIL still shows a clean pet.
+export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number }, px = 5): string {
+  // Pixels as rects, a row's same-coloured neighbours merged; with `over`, only the pixels that differ from it.
+  const rects = (grid: Grid, over?: Grid) =>
+    grid.map((row, y) => {
+      const cells = row.map((c, x) => (over && (over[y]![x] ?? null) === c ? null : c))
+      let out = ''
+      for (let x = 0; x < WIDTH; ) {
+        let end = x + 1
+        while (end < WIDTH && cells[end] === cells[x]) end++
+        if (cells[x] !== null) out += `<rect x="${x * px}" y="${y * px}" width="${(end - x) * px}" height="${px}" fill="${hex(cells[x]!)}"/>`
+        x = end
+      }
+      return out
+    }).join('')
+  const ease = 'calcMode="spline" keyTimes="0;0.5;1" keySplines="0.45 0 0.55 1;0.45 0 0.55 1"'
+  const rhythm = RHYTHM[mood]
+  const motion = rhythm.still ? ''
+    : rhythm.shake ? `<animateTransform attributeName="transform" type="translate" values="${-px * 0.6} 0;${px * 0.6} 0;${-px * 0.6} 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
+    : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
+  const toggle = (dur: number, on: string) => `<animate attributeName="opacity" values="0;1" keyTimes="0;${on}" calcMode="discrete" dur="${dur}ms" repeatCount="indefinite"/>`
+
+  const base = draw(mood, level, { withExtras: false })
+  const blink = mood === 'idle' || mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false }), base)}${toggle(3700, '0.962')}</g>` : ''
+  const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { odd: true, withExtras: false }), base)}${toggle(700, '0.5')}</g>` : ''
+  const extrasA = rects(draw(mood, level, { withBody: false }))
+  const extrasB = rects(draw(mood, level, { withBody: false, odd: true }))
+  const twinkle = extrasA || extrasB
+    ? `<g>${extrasA}<animate attributeName="opacity" values="1;0" keyTimes="0;0.5" calcMode="discrete" dur="700ms" repeatCount="indefinite"/></g><g opacity="0">${extrasB}${toggle(700, '0.5')}</g>`
+    : ''
+  const fade = from && (from.mood !== mood || from.level !== level)
+    ? `<g opacity="0">${rects(draw(from.mood, from.level))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
+    : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * px}" height="${HEIGHT * px}" viewBox="0 0 ${WIDTH * px} ${HEIGHT * px}" shape-rendering="crispEdges"><g>${rects(base)}${blink}${glance}${motion}</g>${twinkle}${fade}</svg>`
 }

@@ -11,8 +11,8 @@ A tiny animated pixel-art companion that lives above your Claude Code prompt and
 ```
 
 - **Bobs** while Claude works, **bounces with sparkles** when a turn finishes, **sweats** when a command fails, **dozes** after 5 idle minutes. Press **♥ pet** (or `ctrl+x tab`, then `p`) and it blushes.
-- Smooth: it animates at 10 fps on the surface's own clock, with blinks and eased bobbing, and moods **crossfade** instead of popping.
-- Four rows tall, drawn with half-block characters, so empty pixels show your terminal or the desktop app behind it. There's no box around it.
+- Smooth: blinks, eased bobbing, and moods that **fade** into each other instead of popping.
+- Small and frameless. In the terminal it's four rows of half-block characters animated at 10 fps; in the desktop app it's a crisp transparent SVG whose motion is built in, gliding between pixels.
 - Levels up every turn and changes colour as it grows: teal sprout → purple spark (lv 3) → coral blaze (lv 6) → golden legend with a crown (lv 10). Level-ups play a short jingle.
 
 ## Install

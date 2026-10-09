@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { xpBar } from '../hooks/register'
-import { HEIGHT, WIDTH, blend, formFor, levelFor, sprite, toRuns, xpFor } from '../hooks/sprite'
+import { HEIGHT, WIDTH, blend, formFor, levelFor, petSvg, sprite, toRuns, xpFor } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved'] as const
 
@@ -42,17 +42,29 @@ test('a crossfade blends colours and swaps appearing pixels halfway', () => {
   expect(blend(from, to, 0.2)[0]![1]).toBeNull()
 })
 
-test('the band is one sentence beside a live sprite on terminal and desktop', async ($, on) => {
+test('the desktop SVG animates, stays transparent and degrades to a still pet', () => {
+  const svg = petSvg('working', 3, { mood: 'idle', level: 3 })
+  expect(svg).toContain('<animateTransform')
+  expect(svg).toContain('calcMode="spline"')
+  expect(svg).not.toContain('<rect width="100%"')
+  expect(svg.length).toBeLessThan(20_000)
+  // Animated layers start hidden, so without SMIL only the still body shows.
+  expect(svg.match(/<g opacity="0">/g)!.length).toBeGreaterThanOrEqual(3)
+  expect(petSvg('sleepy', 1)).not.toContain('animateTransform')
+})
+
+test('the band: a live text sprite in the terminal, an SVG on desktop, one sentence beside it', async ($, on) => {
   mock.store(on)
   mock.clock(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'pixel-pet', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12 } as never })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('"type":"Client"')
+    expect(drawn).toContain(surface === 'terminal' ? '"type":"Client"' : '"type":"Svg"')
+    expect(drawn).not.toContain('isInteractive')
     expect(drawn).toContain('sprout')
     expect(drawn).not.toContain('XP')
     expect(await ui.find({ key: 'pet' })).toBeDefined()
-    expect(JSON.stringify(await ui.drawn({ in: 'pet' }))).toContain('▀')
+    if (surface === 'terminal') expect(JSON.stringify(await ui.drawn({ in: 'pet' }))).toContain('▀')
     await ui.unmount()
   }
 })

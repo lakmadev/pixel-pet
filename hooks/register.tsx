@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Mood, PetView } from '../types'
 import type { PetViewProps } from './pet-view'
-import { formFor, levelFor, xpFor } from './sprite'
+import { formFor, levelFor, petSvg, xpFor } from './sprite'
 
 type Pet = { name: string; xp: number; born: number; turns: number; pets: number }
 
@@ -38,6 +38,9 @@ let moodUntil = 0
 let isWorking = false
 let lastActive = 0
 let contextPercent = 0
+// What the desktop last drew, so a change of mood or form fades from it.
+let shown: { mood: Mood; level: number } | undefined
+let fadeFrom: { mood: Mood; level: number; at: number } | undefined
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
@@ -175,7 +178,9 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    if (e.surface === 'terminal' || e.surface === 'desktop') {
+    // The terminal draws pixels as half-block text on its grid; anywhere else text doesn't line up
+    // into pixels, so the pet is an SVG with its motion built in.
+    if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
       const props: PetViewProps = { mood: current.mood, level: current.level }
       return (
@@ -185,6 +190,16 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    return words
+    const now = await $.clock.now()
+    if (shown && (shown.mood !== current.mood || shown.level !== current.level)) fadeFrom = { ...shown, at: now }
+    shown = { mood: current.mood, level: current.level }
+    const { Svg } = $.ui.resolve(e)
+    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined)
+    return (
+      <Box gap={2} alignItems="center">
+        <Svg source={svg} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
+        {words}
+      </Box>
+    )
   })
 }
