@@ -5,35 +5,47 @@ export type Grid = (number | null)[][]
 export const WIDTH = 10
 export const HEIGHT = 8
 
-export const FORMS = [
-  { minLevel: 10, name: 'legend', body: 0xf6c945, edge: 0x9c7a12 },
-  { minLevel: 6, name: 'blaze', body: 0xff8a65, edge: 0xb2462a },
-  { minLevel: 3, name: 'spark', body: 0x8b7cf6, edge: 0x4b3cb0 },
-  { minLevel: 1, name: 'sprout', body: 0x4fd1c5, edge: 0x1f7a73 },
-] as const
-
-export const formFor = (level: number) => FORMS.find(form => level >= form.minLevel)!
-
-// Colours a person can pick with /pet color; 'auto' follows the level's form.
+// Colours a person can pick with /pet color: the common names, plus a few moods. Each is a body
+// and a darker outline; the order is what a typed prefix matches first.
 export const COLORS: Record<string, { body: number; edge: number }> = {
   teal: { body: 0x4fd1c5, edge: 0x1f7a73 },
+  red: { body: 0xef4444, edge: 0x7f1d1d },
+  orange: { body: 0xfb923c, edge: 0x9a3412 },
+  yellow: { body: 0xfacc15, edge: 0x854d0e },
+  green: { body: 0x4ade80, edge: 0x166534 },
+  blue: { body: 0x60a5fa, edge: 0x1e40af },
   purple: { body: 0x8b7cf6, edge: 0x4b3cb0 },
+  pink: { body: 0xf9a8d4, edge: 0xbe185d },
+  white: { body: 0xf3f4f6, edge: 0x9ca3af },
+  gray: { body: 0x9ca3af, edge: 0x4b5563 },
+  black: { body: 0x374151, edge: 0x111827 },
+  brown: { body: 0xb08968, edge: 0x5c3d2e },
+  cyan: { body: 0x22d3ee, edge: 0x155e75 },
+  mint: { body: 0x86efac, edge: 0x15803d },
+  lime: { body: 0xa3e635, edge: 0x3f6212 },
+  sky: { body: 0x7dd3fc, edge: 0x0369a1 },
+  navy: { body: 0x4f63d2, edge: 0x1e2a78 },
+  indigo: { body: 0x818cf8, edge: 0x3730a3 },
+  violet: { body: 0xa78bfa, edge: 0x5b21b6 },
+  lavender: { body: 0xc4b5fd, edge: 0x6d28d9 },
+  magenta: { body: 0xe879f9, edge: 0x86198f },
+  rose: { body: 0xfb7185, edge: 0x9f1239 },
+  peach: { body: 0xfdba74, edge: 0xc2410c },
   coral: { body: 0xff8a65, edge: 0xb2462a },
   gold: { body: 0xf6c945, edge: 0x9c7a12 },
-  pink: { body: 0xf9a8d4, edge: 0xbe185d },
-  mint: { body: 0x86efac, edge: 0x15803d },
-  sky: { body: 0x7dd3fc, edge: 0x0369a1 },
   lava: { body: 0xf87171, edge: 0x991b1b },
   ghost: { body: 0xe5e7eb, edge: 0x6b7280 },
   midnight: { body: 0x64748b, edge: 0x1e293b },
 }
-export const COLOR_NAMES = ['auto', ...Object.keys(COLORS)]
+export const COLOR_NAMES = Object.keys(COLORS)
+export const DEFAULT_COLOR = 'teal'
+const ALIASES: Record<string, string> = { grey: 'gray', auto: DEFAULT_COLOR }
 
-export const paletteFor = (level: number, color = 'auto') => COLORS[color] ?? formFor(level)
-
-// Level n starts at 40 * (n-1)^2 XP: 4 turns to level 2, ~64 to level 5, ~300 to level 10.
-export const levelFor = (xp: number) => Math.floor(Math.sqrt(xp / 40)) + 1
-export const xpFor = (level: number) => (level - 1) ** 2 * 40
+export const colorName = (name: string | undefined) => {
+  const n = (name ?? '').toLowerCase()
+  return COLORS[n] ? n : ALIASES[n] ?? undefined
+}
+export const paletteFor = (color = DEFAULT_COLOR) => COLORS[colorName(color) ?? DEFAULT_COLOR]!
 
 const INK = 0x1a1a2e
 const WHITE = 0xffffff
@@ -43,7 +55,6 @@ const SPARK = 0xffe066
 const HEART = 0xff5c8a
 const SWEAT = 0x7fdbff
 const ZZZ = 0xcfd8ff
-const GOLD = 0xffd84d
 
 const BODY = [
   '..oooo..',
@@ -97,8 +108,8 @@ export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100)
 type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; color?: string; withBody?: boolean; withExtras?: boolean }
 
 // One still frame. The terminal animates by drawing many of these; the desktop SVG layers a few.
-export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, look = 0, color = 'auto', withBody = true, withExtras = true }: Pose = {}): Grid {
-  const { body, edge } = paletteFor(level, color)
+export function draw(mood: Mood, { lift = 0, dx = 0, blink = false, odd = false, look = 0, color = DEFAULT_COLOR, withBody = true, withExtras = true }: Pose = {}): Grid {
+  const { body, edge } = paletteFor(color)
   const eyes: Eyes =
     mood === 'happy' || mood === 'loved' ? 'happy'
     : mood === 'sleepy' ? 'closed'
@@ -113,8 +124,8 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
   const grid: Grid = Array.from({ length: HEIGHT }, () => Array<number | null>(WIDTH).fill(null))
   const ox = 1 + dx
   const oy = 1 - lift
-  const put = (x: number, y: number, color: number) => {
-    if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) grid[y]![x] = color
+  const put = (x: number, y: number, c: number) => {
+    if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) grid[y]![x] = c
   }
   const paint = { o: edge, b: body, p: BLUSH, k: INK, w: WHITE, r: TONGUE } as const
 
@@ -123,7 +134,6 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
     const shift = mood === 'reading' ? Math.max(-1, Math.min(1, Math.round(look))) : 0
     for (const col of [2 + shift, 5 + shift]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
     for (const [x, y, c] of MOUTHS[mouth]) put(ox + x, oy + y, paint[c])
-    if (level >= 10) for (const x of [2, 3, 4, 5]) put(ox + x, oy, x === 2 || x === 5 ? GOLD : SPARK) // a crown along the top edge
   }
   if (withExtras) {
     if (mood === 'happy') for (const [x, y] of odd ? [[0, 1], [9, 3]] : [[9, 0], [0, 4]]) put(x!, y!, SPARK)
@@ -137,10 +147,10 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
 }
 
 // The frame at time t: bob or shake on the mood's rhythm, blink now and then, twinkle the extras.
-export function sprite(mood: Mood, t: number, level: number, look = 0, color = 'auto'): Grid {
+export function sprite(mood: Mood, t: number, look = 0, color = DEFAULT_COLOR): Grid {
   const rhythm = RHYTHM[mood]
   const phase = wave(t, rhythm.period)
-  return draw(mood, level, {
+  return draw(mood, {
     lift: rhythm.still || rhythm.shake ? 0 : phase > 0.5 ? 1 : 0,
     dx: rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0,
     blink: isBlinking(t),
@@ -165,7 +175,7 @@ export function blend(from: Grid, to: Grid, t: number): Grid {
 }
 
 export type Run = { text: string; fg?: string; bg?: string }
-const hex = (color: number) => `#${color.toString(16).padStart(6, '0')}`
+export const hex = (color: number) => `#${color.toString(16).padStart(6, '0')}`
 
 // Two pixels per cell with half blocks; empty pixels draw nothing, so the surface shows through.
 export function toRuns(grid: Grid): Run[][] {
@@ -194,7 +204,7 @@ export function toRuns(grid: Grid): Run[][] {
 // an eased curve (smoother than whole pixels), blinks and twinkles switch layers, and a mood change
 // fades the previous pose out. Every animated layer rests where a still image should be, so a
 // surface that ignores SMIL still shows a clean pet.
-export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number; color?: string }, look = 0, color = 'auto', px = 5): string {
+export function petSvg(mood: Mood, from?: { mood: Mood; color: string }, look = 0, color = DEFAULT_COLOR, px = 5): string {
   // Pixels as rects, a row's same-coloured neighbours merged; with `over`, only the pixels that differ from it.
   const rects = (grid: Grid, over?: Grid) =>
     grid.map((row, y) => {
@@ -215,16 +225,16 @@ export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: nu
     : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
   const toggle = (dur: number, on: string) => `<animate attributeName="opacity" values="0;1" keyTimes="0;${on}" calcMode="discrete" dur="${dur}ms" repeatCount="indefinite"/>`
 
-  const base = draw(mood, level, { withExtras: false, look, color })
-  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false, look, color }), base)}${toggle(3700, '0.962')}</g>` : ''
-  const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { odd: true, withExtras: false, color }), base)}${toggle(700, '0.5')}</g>` : ''
-  const extrasA = rects(draw(mood, level, { withBody: false }))
-  const extrasB = rects(draw(mood, level, { withBody: false, odd: true }))
+  const base = draw(mood, { withExtras: false, look, color })
+  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, { blink: true, withExtras: false, look, color }), base)}${toggle(3700, '0.962')}</g>` : ''
+  const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, { odd: true, withExtras: false, color }), base)}${toggle(700, '0.5')}</g>` : ''
+  const extrasA = rects(draw(mood, { withBody: false }))
+  const extrasB = rects(draw(mood, { withBody: false, odd: true }))
   const twinkle = extrasA || extrasB
     ? `<g>${extrasA}<animate attributeName="opacity" values="1;0" keyTimes="0;0.5" calcMode="discrete" dur="700ms" repeatCount="indefinite"/></g><g opacity="0">${extrasB}${toggle(700, '0.5')}</g>`
     : ''
-  const fade = from && (from.mood !== mood || from.level !== level || (from.color ?? 'auto') !== color)
-    ? `<g opacity="0">${rects(draw(from.mood, from.level, { color: from.color }))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
+  const fade = from && (from.mood !== mood || from.color !== color)
+    ? `<g opacity="0">${rects(draw(from.mood, { color: from.color }))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
     : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * px}" height="${HEIGHT * px}" viewBox="0 0 ${WIDTH * px} ${HEIGHT * px}" shape-rendering="crispEdges"><g>${rects(base)}${blink}${glance}${motion}</g>${twinkle}${fade}</svg>`
 }

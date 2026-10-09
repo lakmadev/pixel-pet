@@ -1,11 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Mood, PetView } from '../types'
+import type { ContextMeter, Mood, PetView } from '../types'
+import { details, gradientAt, hex, meterSvg } from './meter'
+import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
-import { COLOR_NAMES, formFor, levelFor, petSvg, xpFor } from './sprite'
+import { COLOR_NAMES, COLORS, DEFAULT_COLOR, colorName, petSvg } from './sprite'
 
-type Pet = { name: string; xp: number; born: number; turns: number; pets: number; color?: string }
+// `xp` is a leftover field from when the pet had levels; old records keep it, nothing reads it.
+type Pet = { name: string; born: number; turns: number; pets: number; color?: string; xp?: number }
 
 const LINES: Record<Mood, string[]> = {
   idle: ['is waiting for you', 'is vibing', 'is counting pixels', 'is guarding your repo', 'is humming quietly'],
@@ -21,36 +24,32 @@ const LINES: Record<Mood, string[]> = {
 
 const pick = (list: readonly string[]) => list[Math.floor(Math.random() * list.length)]!
 const SLEEP_AFTER_MS = 5 * 60_000
-
-export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
-  const level = levelFor(pet.xp)
-  return { mood, line, name: pet.name, color: previewColor ?? pet.color ?? defaultColor, level, xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1), form: formFor(level).name, isHidden }
-}
-
-export function xpBar(view: Pick<PetView, 'xp' | 'levelXp' | 'nextXp'>, width = 10): string {
-  const filled = Math.round(((view.xp - view.levelXp) / (view.nextXp - view.levelXp)) * width)
-  return '▰'.repeat(filled) + '▱'.repeat(width - filled)
-}
+const METER_CELLS = 14
 
 // The configured colour, used until /pet color picks one; and the one being tried on while typing it.
-let defaultColor = 'auto'
+let defaultColor = DEFAULT_COLOR
 let previewColor: string | undefined
+let meter: ContextMeter = {}
 
-const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
+export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
+  return { mood, line, name: pet.name, color: previewColor ?? colorName(pet.color) ?? defaultColor, isHidden, meter }
+}
+
+const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
 
 // Module state between hooks; the pet's record is rebuilt from the store on reload.
-let pet: Pet = { name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }
+let pet: Pet = { name: 'Bit', born: 0, turns: 0, pets: 0 }
 let mood: Mood = 'idle'
 let moodUntil = 0
 let isWorking = false
 let lastActive = 0
-let contextPercent = 0
 // Where the eyes point while reading along (-1 left … 1 right), and what the band last said.
 let look = 0
 let lastLine = ''
-// What the desktop last drew, so a change of mood or form fades from it.
-let shown: { mood: Mood; level: number; color: string } | undefined
-let fadeFrom: { mood: Mood; level: number; color: string; at: number } | undefined
+// What the desktop last drew, so a change of mood or colour fades from it and the meter glides.
+let shown: { mood: Mood; color: string } | undefined
+let fadeFrom: { mood: Mood; color: string; at: number } | undefined
+let drawnPercent = 0
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
@@ -62,14 +61,25 @@ async function setMood($: EngineInterface, next: Mood, forMs = 0) {
   moodUntil = forMs ? now + forMs : 0
   if (next === mood && !forMs) return
   mood = next
-  const line = next === 'idle' && contextPercent >= 80 ? `is stuffed with tokens (${contextPercent}% context)` : pick(LINES[next])
+  const line = next === 'idle' && (meter.percent ?? 0) >= 80 ? `is stuffed with tokens (${meter.percent}% context)` : pick(LINES[next])
   await update($, view, current => viewOf(pet, next, line, current.isHidden))
 }
 
-const COLOR_NOTES: Record<string, string> = {
-  auto: 'follows its level: teal → purple → coral → gold',
-  teal: 'calm sea-green', purple: 'soft violet', coral: 'warm orange-red', gold: 'shiny and smug',
-  pink: 'bubblegum', mint: 'fresh green', sky: 'clear blue', lava: 'hot red', ghost: 'pale and spooky', midnight: 'dark slate',
+async function setMeter($: EngineInterface, reading: { context: { percent?: number; tokens?: number; window: number }; cost?: { usd: number }; rateLimits: { kind: string; percentUsed: number }[] }) {
+  meter = {
+    percent: reading.context.percent ?? meter.percent,
+    tokens: reading.context.tokens ?? meter.tokens,
+    window: reading.context.window || meter.window,
+    usd: reading.cost?.usd ?? meter.usd,
+    limit: reading.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed ?? meter.limit,
+  }
+  await update($, view, current => ({ ...current, meter }))
+}
+
+async function petIt($: EngineInterface) {
+  pet = { ...pet, pets: pet.pets + 1 }
+  await $.store.set('pet', pet)
+  await setMood($, 'loved', 4000)
 }
 
 const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
@@ -79,7 +89,7 @@ const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
 export function previewFor(draft: string): string | undefined {
   const partial = COLOR_COMMAND.exec(draft)?.[1]?.toLowerCase()
   if (!partial) return undefined
-  return COLOR_NAMES.find(name => name === partial) ?? COLOR_NAMES.find(name => name.startsWith(partial))
+  return colorName(partial) ?? COLOR_NAMES.find(name => name.startsWith(partial))
 }
 
 const afterEdit = (e: { text: string; start: number; end: number; inputText: string }) => e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
@@ -125,21 +135,8 @@ async function react($: EngineInterface, reaction: NonNullable<ReturnType<typeof
   await update($, view, current => viewOf(pet, reaction.mood, lastLine, current.isHidden))
 }
 
-async function gainXp($: EngineInterface, amount: number, sound: boolean) {
-  const before = levelFor(pet.xp)
-  pet = { ...pet, xp: pet.xp + amount }
-  await $.store.set('pet', pet)
-  const after = levelFor(pet.xp)
-  if (after > before) {
-    const evolved = formFor(after).name !== formFor(before).name
-    $.ui.toast(evolved ? `✨ ${pet.name} evolved into its ${formFor(after).name} form! (level ${after})` : `✨ ${pet.name} reached level ${after}!`)
-    if (sound) await $.audio.play({ asset: 'assets/levelup.wav' }).catch(() => undefined)
-  }
-  await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
-}
-
 // A passing mood (happy, oops, loved) wears off; a long idle drifts into sleep. The motion itself
-// runs in pet-view.tsx on the surface's clock.
+// runs on the surface's clock (pet-view.tsx) or in the SVG.
 async function checkMood($: EngineInterface) {
   const now = await $.clock.now()
   if (moodUntil && now > moodUntil) await setMood($, baseMood(now))
@@ -147,16 +144,17 @@ async function checkMood($: EngineInterface) {
 }
 
 export const register: Register = (on, options) => {
-  const sound = options.sound !== false
-  defaultColor = COLOR_NAMES.includes(String(options.color)) ? String(options.color) : 'auto'
+  defaultColor = colorName(String(options.color)) ?? DEFAULT_COLOR
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'pet', description: 'Your pixel pet: stats, or show / hide / rename <name> / color <name>', argumentHint: '[show|hide|rename <name>|color <name>]' })
     const now = await $.clock.now()
     const saved = (await $.store.get('pet')) as Pet | undefined
-    pet = saved ?? { name: String(options.name ?? 'Bit'), xp: 0, born: now, turns: 0, pets: 0 }
+    pet = saved ?? { name: String(options.name ?? 'Bit'), born: now, turns: 0, pets: 0 }
     if (!saved) await $.store.set('pet', pet)
     lastActive = now
+    const usage = await $.session.usage().catch(() => undefined)
+    if (usage) await setMeter($, usage)
     await update($, view, current => viewOf(pet, 'idle', saved ? pick(LINES.idle) : 'just hatched! say hi 👋', current.isHidden))
     $.clock.every(1000, () => void checkMood($).catch(() => undefined))
     return next(e)
@@ -175,13 +173,20 @@ export const register: Register = (on, options) => {
     return box
   })
 
-  // The colour names as typeahead rows while the colour word is being typed.
+  // The colour names as typeahead rows while the colour word is being typed, each with its swatch.
   on('prompt.autocomplete', async ($, e, next) => {
     const offered = await next(e)
     if (!COLOR_COMMAND.test(e.text.slice(0, e.cursor))) return offered
     const partial = e.token.toLowerCase()
-    const rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: COLOR_NOTES[name] }))
+    const rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: hex(COLORS[name]!.body) }))
     return { suggestions: [...offered.suggestions, ...rows] }
+  })
+
+  // A click on the sprite (terminal) or on the layer over it (desktop) pets it.
+  on('ui.message', async ($, e, next) => {
+    const done = await next(e)
+    if ((e.element === 'pet' || e.element === 'pet-hit') && (e.data as { pet?: boolean } | null)?.pet) await petIt($)
+    return done
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -207,8 +212,8 @@ export const register: Register = (on, options) => {
       return done
     }
     pet = { ...pet, turns: pet.turns + 1 }
+    await $.store.set('pet', pet)
     await setMood($, 'happy', 6000)
-    await gainXp($, 10, sound)
     return done
   })
 
@@ -219,8 +224,9 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
-    contextPercent = e.context.percent ?? contextPercent
-    return next(e)
+    const measured = await next(e)
+    await setMeter($, e)
+    return measured
   })
 
   on('command.run', { command: 'pet' }, async ($, e) => {
@@ -230,16 +236,16 @@ export const register: Register = (on, options) => {
       return { text: verb === 'hide' ? `${pet.name} is resting off-screen. /pet show brings it back.` : `${pet.name} is back!` }
     }
     if (verb === 'color' || verb === 'colour') {
-      const choice = (rest[0] ?? '').toLowerCase()
-      if (!COLOR_NAMES.includes(choice)) {
+      const choice = colorName(rest[0])
+      if (!choice) {
         await preview($, undefined)
         return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
       }
       previewColor = undefined
-      pet = { ...pet, color: choice === 'auto' ? undefined : choice }
+      pet = { ...pet, color: choice }
       await $.store.set('pet', pet)
       await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
-      return { text: choice === 'auto' ? `${pet.name} follows its level's colours again.` : `${pet.name} is now ${choice}.` }
+      return { text: `${pet.name} is now ${choice}.` }
     }
     if (verb === 'rename' && rest.length) {
       pet = { ...pet, name: rest.join(' ').slice(0, 24) }
@@ -247,14 +253,12 @@ export const register: Register = (on, options) => {
       await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
       return { text: `Your pet is now called ${pet.name}.` }
     }
-    const level = levelFor(pet.xp)
     const days = Math.max(0, Math.floor(((await $.clock.now()) - pet.born) / 86_400_000))
     return {
       text: [
-        `${pet.name} · level ${level} ${formFor(level).name} · ${pet.color ?? defaultColor} colour`,
-        `XP ${xpBar({ xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1) })} ${pet.xp}/${xpFor(level + 1)}`,
+        `${pet.name} · ${colorName(pet.color) ?? defaultColor}`,
         `${pet.turns} turns together · petted ${pet.pets} times · ${days} days old`,
-        level < 10 ? `Next form at level ${[3, 6, 10].find(l => l > level)}; a crown at level 10.` : 'Fully evolved. Legendary.',
+        'Click it to pet it. /pet color <name> changes its colour, /pet rename <name> its name.',
       ].join('\n'),
     }
   })
@@ -262,48 +266,67 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, view)
     if (e.props.hasSurvey || current.isHidden || e.props.maxRows < 4) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
-
-    const onPet = async () => {
-      pet = { ...pet, pets: pet.pets + 1 }
-      await setMood($, 'loved', 4000)
-      await gainXp($, 1, sound)
-    }
-    // One sentence and one quiet line: "Bit is typing furiously…", then its level and the pet button.
-    const words = (
-      <Box flexDirection="column" justifyContent="center">
-        <Text wrap="truncate">
-          <Text bold color="claude">{current.name}</Text>
-          <Text> {current.line}</Text>
-        </Text>
-        <Box gap={1}>
-          <Text dimColor>lv {current.level} {current.form}</Text>
-          <Button key="pet" label="♥ pet" plain dimColor hotkey="p" onPress={onPet} />
-        </Box>
-      </Box>
+    const { Box, Text } = $.ui.resolve(e)
+    const percent = current.meter.percent
+    const line = (
+      <Text wrap="truncate">
+        <Text bold color="claude">{current.name}</Text>
+        <Text> {current.line}</Text>
+      </Text>
     )
 
-    // The terminal draws pixels as half-block text on its grid; anywhere else text doesn't line up
-    // into pixels, so the pet is an SVG with its motion built in.
+    // The terminal draws pixels as half-block text on its grid and animates the meter there too;
+    // anywhere else text doesn't line up into pixels, so pet and meter are SVGs with motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
-      const props: PetViewProps = { mood: current.mood, level: current.level, look, color: current.color }
+      const pet: PetViewProps = { mood: current.mood, look, color: current.color }
+      // Props carry no undefined: before the first reading, percent is left out.
+      const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), details: details(current.meter), isWorking, width: METER_CELLS }
       return (
         <Box gap={2} alignItems="center">
-          <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={props} />
-          {words}
+          <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
+          <Box flexDirection="column" justifyContent="center">
+            {line}
+            <Client key="meter" module="./meter-view.tsx" props={gauge} />
+          </Box>
         </Box>
       )
     }
+
     const now = await $.clock.now()
-    if (shown && (shown.mood !== current.mood || shown.level !== current.level || shown.color !== current.color)) fadeFrom = { ...shown, at: now }
-    shown = { mood: current.mood, level: current.level, color: current.color }
+    if (shown && (shown.mood !== current.mood || shown.color !== current.color)) fadeFrom = { ...shown, at: now }
+    shown = { mood: current.mood, color: current.color }
+    const from = drawnPercent
+    if (percent !== undefined) drawnPercent = percent
     const { Svg } = $.ui.resolve(e)
-    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)
+    // An invisible layer over the sprite catches the click; the SVG itself can't.
+    let hit: RenderChildren = null
+    if (e.surface === 'desktop') {
+      const { Client } = $.ui.resolve(e)
+      hit = (
+        <Box position="absolute" top={0} left={0}>
+          <Client key="pet-hit" module="./hit.tsx" width={6} height={2} props={{ columns: 6 }} />
+        </Box>
+      )
+    }
     return (
       <Box gap={2} alignItems="center">
-        <Svg source={svg} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
-        {words}
+        <Box>
+          <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
+          {hit}
+        </Box>
+        <Box flexDirection="column" justifyContent="center">
+          {line}
+          {percent === undefined ? (
+            <Text dimColor>context · waiting for the first reply</Text>
+          ) : (
+            <Box gap={1} alignItems="center">
+              <Svg source={meterSvg(percent, from, isWorking)} alt={`Context ${percent}% full`} width={116} height={12} />
+              <Text bold color={hex(gradientAt(percent / 100))}>{percent}%</Text>
+              <Text dimColor>{details(current.meter)}</Text>
+            </Box>
+          )}
+        </Box>
       </Box>
     )
   })

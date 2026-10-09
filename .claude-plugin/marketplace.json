@@ -1,6 +1,6 @@
 {
   "name": "pixel-pet",
-  "description": "An animated pixel-art companion above your prompt that reacts to your session and levels up as you code.",
+  "description": "An animated pixel-art companion above your prompt that reacts to your session and your typing, with a live context meter.",
   "owner": {
     "name": "lakmadev",
     "url": "https://github.com/lakmadev"
@@ -9,7 +9,7 @@
     {
       "name": "pixel-pet",
       "source": "./",
-      "description": "An animated pixel-art companion above your prompt that reacts to your session and levels up as you code."
+      "description": "An animated pixel-art companion above your prompt that reacts to your session and your typing, with a live context meter."
     }
   ]
 }
