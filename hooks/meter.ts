@@ -96,7 +96,8 @@ export const TONES: Record<'dark' | 'light', Tones> = { dark: { label: '#9a9aa2'
 
 // Desktop: the usage windows as one SVG, so labels, pills and percents line up exactly
 // (the app's proportional font draws ▰ and ▱ at different widths).
-export function limitsSvg(limits: readonly Limit[], tones: Tones): { svg: string; width: number } {
+// The windows' pieces in their own 16px-tall coordinates; limitsSvg wraps them.
+export function limitsParts(limits: readonly Limit[], tones: Tones): { body: string; width: number } {
   const CHAR = 7.4
   const PILL = 30
   let x = 0
@@ -116,11 +117,14 @@ export function limitsSvg(limits: readonly Limit[], tones: Tones): { svg: string
       + `<rect x="${px}" y="5" width="${fill.toFixed(1)}" height="5" rx="2.5" fill="${color}"/>`
       + `<text x="${tx}" y="12" fill="${color}" font-weight="700">${pct}</text>`
   })
-  const width = Math.ceil(Math.max(1, end + 2))
-  return {
-    width,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="16" viewBox="0 0 ${width} 16" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="12.5">${parts.join('')}</svg>`,
-  }
+  return { body: parts.join(''), width: Math.ceil(Math.max(1, end + 2)) }
+}
+
+export const FONT = `font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="12.5"`
+
+export function limitsSvg(limits: readonly Limit[], tones: Tones): { svg: string; width: number } {
+  const { body, width } = limitsParts(limits, tones)
+  return { width, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="16" viewBox="0 0 ${width} 16" ${FONT}>${body}</svg>` }
 }
 
 export const segmentsText = (parts: readonly Segment[]) => parts.map(p => p.text).join('')
@@ -150,7 +154,9 @@ export function barRuns(percent: number, width: number, shine?: number): Run[] {
 
 // Desktop: a rounded pill whose fill glides from the last reading to this one, with a soft
 // highlight sweeping across while Claude works and a glow at the tip.
-export function meterSvg(percent: number, from: number, isWorking: boolean, width = 110): string {
+// The bar's pieces in its own 12px-tall coordinates: what meterSvg wraps, and what the band's
+// second line places among the helpers. Ids are local to whichever SVG holds them.
+export function meterParts(percent: number, from: number, isWorking: boolean, width = 110): { defs: string; body: string } {
   const w = (p: number) => Math.max(0, Math.min(1, p / 100)) * width
   const to = w(percent)
   const start = w(from)
@@ -161,13 +167,18 @@ export function meterSvg(percent: number, from: number, isWorking: boolean, widt
   const shimmer = isWorking
     ? `<rect y="3" width="30" height="6" fill="url(#s)" clip-path="url(#c)"><animate attributeName="x" values="-30;${width}" dur="1.6s" repeatCount="indefinite"/></rect>`
     : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width + 6}" height="12" viewBox="-3 0 ${width + 6} 12">`
-    + `<defs><linearGradient id="g" x1="0" x2="${width}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#34d399"/><stop offset="0.6" stop-color="#fbbf24"/><stop offset="1" stop-color="#f87171"/></linearGradient>`
-    + `<linearGradient id="s" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>`
-    + `<clipPath id="c"><rect y="3" width="${to.toFixed(1)}" height="6" rx="3">${glide('width')}</rect></clipPath></defs>`
-    + `<rect y="3" width="${width}" height="6" rx="3" fill="#8b93a7" fill-opacity="0.22"/>`
-    + `<rect y="3" width="${to.toFixed(1)}" height="6" rx="3" fill="url(#g)">${glide('width')}</rect>`
-    + shimmer
-    + `<circle cx="${to.toFixed(1)}" cy="6" r="4.5" fill="${tip}" fill-opacity="0.35">${glide('cx')}</circle>`
-    + `</svg>`
+  return {
+    defs: `<linearGradient id="g" x1="0" x2="${width}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#34d399"/><stop offset="0.6" stop-color="#fbbf24"/><stop offset="1" stop-color="#f87171"/></linearGradient>`
+      + `<linearGradient id="s" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>`
+      + `<clipPath id="c"><rect y="3" width="${to.toFixed(1)}" height="6" rx="3">${glide('width')}</rect></clipPath>`,
+    body: `<rect y="3" width="${width}" height="6" rx="3" fill="#8b93a7" fill-opacity="0.22"/>`
+      + `<rect y="3" width="${to.toFixed(1)}" height="6" rx="3" fill="url(#g)">${glide('width')}</rect>`
+      + shimmer
+      + `<circle cx="${to.toFixed(1)}" cy="6" r="4.5" fill="${tip}" fill-opacity="0.35">${glide('cx')}</circle>`,
+  }
+}
+
+export function meterSvg(percent: number, from: number, isWorking: boolean, width = 110): string {
+  const { defs, body } = meterParts(percent, from, isWorking, width)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width + 6}" height="12" viewBox="-3 0 ${width + 6} 12"><defs>${defs}</defs>${body}</svg>`
 }

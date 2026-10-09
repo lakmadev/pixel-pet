@@ -2,13 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { ContextMeter, Mini, Mood, PetView } from '../types'
-import { TONES, cardLines, gradientAt, hex, limitsSvg, meterSvg, segments } from './meter'
+import { TONES, cardLines, hex, segments } from './meter'
 import type { Source } from './meter'
 import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
 import { COLOR_NAMES, COLORS, DEFAULT_COLOR, colorName, petSvg } from './sprite'
 import { LINE_COLORS, actionLine, lineSvg, lineWidth } from './status'
-import { LEAVE_MS, colorFromDefinition, miniColor, minisSvg } from './mini'
+import { LEAVE_MS, colorFromDefinition, miniColor } from './mini'
+import { lineTwoSvg } from './line2'
+import type { Layout } from './line2'
 import type { MinisViewProps } from './minis-view'
 import type { StatusViewProps } from './status-view'
 
@@ -30,7 +32,7 @@ const LINES: Record<Mood, string[]> = {
 }
 
 const pick = (list: readonly string[]) => list[Math.floor(Math.random() * list.length)]!
-const SLEEP_AFTER_MS = 5 * 60_000
+const SLEEP_AFTER_MS = 60_000
 const METER_CELLS = 14
 
 // The configured colour, used until /pet color picks one; and the one being tried on while typing it.
@@ -39,6 +41,11 @@ let previewColor: string | undefined
 let meter: ContextMeter = {}
 // The helpers on screen, one per running subagent, and which agent each stands for.
 let minis: Mini[] = []
+// Helpers that start together arrive one by one, this far apart.
+const HATCH_GAP_MS = 450
+let lastHatchAt = 0
+// Where the desktop's second line last put each helper and the bar, to glide from.
+let lineTwoLayout: Layout | undefined
 const miniOf = new Map<string, string>()
 
 export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
@@ -242,8 +249,13 @@ async function tendMinis($: EngineInterface, now: number) {
 async function hatch($: EngineInterface, id: string, type: string) {
   const name = type.split(':').pop() ?? type
   const color = (await definedColor($, name)) ?? miniColor(id, colorName(pet.color) ?? defaultColor)
-  minis = [...minis.filter(m => m.id !== id), { id, name, color, state: 'here' as const, at: await $.clock.now() }].slice(-6)
+  const now = await $.clock.now()
+  const at = Math.max(now, lastHatchAt + HATCH_GAP_MS)
+  lastHatchAt = at
+  minis = [...minis.filter(m => m.id !== id), { id, name, color, state: 'here' as const, at }].slice(-6)
   await update($, view, current => ({ ...current, minis }))
+  // A queued helper's turn: draw again when it's due, so its slot starts opening on time.
+  if (at > now) $.clock.after(at - now, () => void update($, view, current => ({ ...current, minis })).catch(() => undefined))
 }
 
 async function sayBye($: EngineInterface, id: string) {
@@ -436,7 +448,9 @@ export const register: Register = (on, options) => {
     const percent = current.meter.percent
     const parts = segments(current.meter, now)
     // The helpers' ages at this draw: each one's story (pop in, bob, wave, fade) runs from its age.
-    const helpers = current.minis.map(m => ({ id: m.id, color: m.color, state: m.state, age: Math.max(0, now - m.at) }))
+    // Newest first, so a new helper takes the leftmost slot and pushes the rest along; one still
+    // queued has a negative age and no slot yet.
+    const helpers = [...current.minis].sort((a, b) => b.at - a.at).map(m => ({ id: m.id, color: m.color, state: m.state, age: now - m.at }))
     // Point at the meter for the details the line leaves out: tokens, resets, how you're billed.
     // Hidden until hovered; it opens over the band, which clips it, so it stays within four rows.
     const card = cardLines(current.meter, now)
@@ -458,14 +472,10 @@ export const register: Register = (on, options) => {
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
-          {helpers.length > 0 && (
-            <Box alignSelf="flex-end">
-              <Client key="minis" module="./minis-view.tsx" props={{ minis: helpers, stamp: now } satisfies MinisViewProps} />
-            </Box>
-          )}
           <Box flexDirection="column" justifyContent="center">
             <Client key="status" module="./status-view.tsx" props={status} />
-            <Box key="meter-row" alignItems="center">
+            <Box key="meter-row" alignItems="flex-end">
+              {helpers.length > 0 && <Client key="minis" module="./minis-view.tsx" props={{ minis: helpers, stamp: now } satisfies MinisViewProps} />}
               <Client key="meter" module="./meter-view.tsx" props={gauge} />
               {hint}
               {details}
@@ -493,38 +503,34 @@ export const register: Register = (on, options) => {
       )
     }
     const previous = slideFrom && now - slideFrom.at < 600 ? slideFrom.line : undefined
-    const crew = helpers.length > 0 ? minisSvg(helpers) : undefined
-    // Desktop draws the usage windows as SVG pills; a tight window's reset and the API's bill stay text.
-    const windows = current.meter.limits ?? []
-    const limits = windows.length > 0 ? limitsSvg(windows, TONES[theme]) : undefined
+    // The second line, helpers and all, as one SVG that glides from where the last draw left it.
     const resets = parts.filter(p => p.text.startsWith(' resets')).map(p => p.text.trim()).join(' · ')
     const bill = parts.find(p => p.text.startsWith('$'))?.text
+    const two = lineTwoSvg({
+      minis: helpers,
+      ...(percent === undefined ? {} : { percent }),
+      from,
+      isWorking,
+      limits: current.meter.limits ?? [],
+      ...(resets ? { resets } : {}),
+      ...(bill ? { bill } : {}),
+      hasInfo: card.length > 0,
+      tones: { ...TONES[theme], text: LINE_COLORS[theme].text },
+    }, lineTwoLayout)
+    lineTwoLayout = two.layout
+    const helpersAlt = current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`)
     return (
       <Box gap={2} alignItems="center">
         <Box>
           <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
           {hit}
         </Box>
-        {crew && (
-          <Box alignSelf="flex-end">
-            <Svg source={crew.svg} alt={current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`).join(', ')} width={crew.width} height={crew.height} />
-          </Box>
-        )}
         <Box flexDirection="column" justifyContent="center">
           <Svg source={lineSvg(current.name, current.line, previous, LINE_COLORS[theme])} alt={`${current.name} ${current.line}`} width={lineWidth(current.name, current.line, previous)} height={20} />
-          {percent === undefined ? (
-            <Text dimColor>context · waiting for the first reply</Text>
-          ) : (
-            <Box key="meter-row" gap={1} alignItems="center">
-              <Svg source={meterSvg(percent, from, isWorking)} alt={`Context ${percent}% full`} width={116} height={12} />
-              <Text bold color={hex(gradientAt(percent / 100))}>{percent}%</Text>
-              {limits && <Svg source={limits.svg} alt={card.slice(1).join('; ')} width={limits.width} height={16} />}
-              {resets && <Text dimColor>{resets}</Text>}
-              {bill && <Text bold>{bill}</Text>}
-              {hint}
-              {details}
-            </Box>
-          )}
+          <Box key="meter-row">
+            <Svg source={two.svg} alt={[...helpersAlt, ...card].join('; ') || 'context meter'} width={two.width} height={26} />
+            {details}
+          </Box>
         </Box>
       </Box>
     )

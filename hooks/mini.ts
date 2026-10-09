@@ -56,34 +56,33 @@ export function miniFrame(color: string, state: 'here' | 'bye', age: number, see
 
 export const seedOf = (id: string) => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % 997
 
-// Desktop: every mini in one SVG, each with its own motion: a springy pop-in, a bob at its own
-// pace, a wave, then a float up and fade. Ages say where each one is in its story.
-export function minisSvg(minis: readonly { id: string; color: string; state: 'here' | 'bye'; age: number }[], px = 5): { svg: string; width: number; height: number } {
+// Desktop: one helper drawn at its slot's origin, its story told by its age: once its slot has
+// opened (SLOT_MS) it pops in with a little spring, then bobs and blinks at its own pace; leaving,
+// it waves, floats up and fades. Laid out by the band's second line (line2.ts).
+export const SLOT_MS = 380
+
+export function miniBody(mini: { id: string; color: string; state: 'here' | 'bye'; age: number }, px = 5): string {
   const w = MINI_W * px
   const h = MINI_H * px
-  const gap = px * 1.4
-  const height = h + px * 2
   const rects = (grid: Grid) => grid.map((row, y) => row.map((c, x) => (c === null ? '' : `<rect x="${x * px}" y="${y * px}" width="${px}" height="${px}" fill="${hex(c)}"/>`)).join('')).join('')
+  const seed = seedOf(mini.id)
+  if (mini.state === 'bye') {
+    const wave = (up: boolean) => `<g opacity="${up ? 1 : 0}">${rects(miniDraw(mini.color, { arm: true, armUp: up }))}<animate attributeName="opacity" values="${up ? '1;0' : '0;1'}" keyTimes="0;0.5" calcMode="discrete" dur="440ms" repeatCount="${Math.ceil(WAVE_MS / 440)}" fill="freeze"/></g>`
+    const fadeAt = Math.max(0, WAVE_MS - mini.age)
+    return `<g>${wave(true)}${wave(false)}`
+      + `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 1.6}" dur="800ms" begin="${fadeAt}ms" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1" fill="freeze"/>`
+      + `<animate attributeName="opacity" values="1;0" dur="800ms" begin="${fadeAt}ms" fill="freeze"/></g>`
+  }
   const spline = 'calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1"'
-  const groups = minis.map((mini, i) => {
-    const seed = seedOf(mini.id)
-    const x = i * (w + gap)
-    const cx = (w - px) / 2
-    const cy = h / 2
-    if (mini.state === 'bye') {
-      const wave = (up: boolean) => `<g opacity="${up ? 1 : 0}">${rects(miniDraw(mini.color, { arm: true, armUp: up }))}<animate attributeName="opacity" values="${up ? '1;0' : '0;1'}" keyTimes="0;0.5" calcMode="discrete" dur="440ms" repeatCount="${Math.ceil(WAVE_MS / 440)}" fill="freeze"/></g>`
-      const fadeAt = Math.max(0, WAVE_MS - mini.age)
-      return `<g transform="translate(${x} ${px * 2})"><g>${wave(true)}${wave(false)}`
-        + `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 1.6}" dur="800ms" begin="${fadeAt}ms" calcMode="spline" keyTimes="0;1" keySplines="0.3 0 0.7 1" fill="freeze"/>`
-        + `<animate attributeName="opacity" values="1;0" dur="800ms" begin="${fadeAt}ms" fill="freeze"/></g></g>`
-    }
-    const bob = `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 0.7};0 0" keyTimes="0;0.5;1" dur="${560 + (seed % 240)}ms" ${spline} repeatCount="indefinite"/>`
-    const blink = `<g opacity="0">${rects(miniDraw(mini.color, { blink: true }))}<animate attributeName="opacity" values="0;1" keyTimes="0;0.96" calcMode="discrete" dur="${2900 + (seed % 900)}ms" begin="${-(seed % 2900)}ms" repeatCount="indefinite"/></g>`
-    const pop = mini.age < ARRIVE_MS
-      ? `<animateTransform attributeName="transform" type="scale" additive="sum" values="0;1.2;1" keyTimes="0;0.65;1" dur="${ARRIVE_MS}ms" calcMode="spline" keySplines="0.2 0.8 0.3 1;0.4 0 0.6 1" fill="freeze"/>`
-      : ''
-    return `<g transform="translate(${x + cx} ${px * 2 + cy})"><g>${pop}<g transform="translate(${-cx} ${-cy})"><g>${rects(miniDraw(mini.color))}${blink}${bob}</g></g></g></g>`
-  })
-  const width = Math.max(1, Math.ceil(minis.length * (w + gap) - gap))
-  return { width, height, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">${groups.join('')}</svg>` }
+  const bob = `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 0.7};0 0" keyTimes="0;0.5;1" dur="${560 + (seed % 240)}ms" ${spline} repeatCount="indefinite"/>`
+  const blink = `<g opacity="0">${rects(miniDraw(mini.color, { blink: true }))}<animate attributeName="opacity" values="0;1" keyTimes="0;0.96" calcMode="discrete" dur="${2900 + (seed % 900)}ms" begin="${-(seed % 2900)}ms" repeatCount="indefinite"/></g>`
+  const body = `<g>${rects(miniDraw(mini.color))}${blink}${bob}</g>`
+  if (mini.age >= SLOT_MS + ARRIVE_MS) return body
+  // Not yet popped: hold at nothing while the slot opens, then spring out from the middle.
+  const wait = Math.max(0, SLOT_MS - mini.age)
+  const cx = (w - px) / 2
+  const cy = h / 2
+  return `<g transform="translate(${cx} ${cy})"><g transform="scale(${wait > 0 ? 0 : 1})">`
+    + `<animateTransform attributeName="transform" type="scale" values="0;1.2;1" keyTimes="0;0.65;1" dur="${ARRIVE_MS}ms" begin="${wait}ms" calcMode="spline" keySplines="0.2 0.8 0.3 1;0.4 0 0.6 1" fill="freeze"/>`
+    + `<g transform="translate(${-cx} ${-cy})">${body}</g></g></g>`
 }

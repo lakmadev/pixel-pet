@@ -2,7 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { TONES, barRuns, cardLines, gradientAt, limitsSvg, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
 import { actionLine, lineSvg, LINE_COLORS } from '../hooks/status'
-import { ARRIVE_MS, LEAVE_MS, MINI_H, MINI_W, WAVE_MS, colorFromDefinition, miniColor, miniDraw, miniFrame, minisSvg } from '../hooks/mini'
+import { ARRIVE_MS, LEAVE_MS, MINI_H, MINI_W, SLOT_MS, WAVE_MS, colorFromDefinition, miniColor, miniDraw, miniFrame } from '../hooks/mini'
+import { lineTwoSvg } from '../hooks/line2'
+import { slotWidth } from '../hooks/minis-view'
 import { previewFor, reactionTo, sourceOf } from '../hooks/register'
 import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, paletteFor, petSvg, sprite, toRuns } from '../hooks/sprite'
 
@@ -83,7 +85,7 @@ test('the band: pet and live meter in the terminal; SVGs and a click layer on de
       expect(drawn).toContain('"hover":{"display":"flex"}')
     } else {
       expect(drawn).toContain('hit.tsx')
-      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(4)
+      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(3)
       expect(drawn).not.toContain('↻')
       expect(drawn).toContain('Billing: Claude plan')
       expect(drawn).toContain('resets ')
@@ -241,9 +243,37 @@ test('the helpers: half size, their own colour, a pop in and a wave bye', () => 
   expect(JSON.stringify(miniFrame('pink', 'bye', 0, 0))).not.toBe(JSON.stringify(miniFrame('pink', 'bye', 230, 0)))
   expect(miniFrame('pink', 'bye', WAVE_MS + 700, 0)).toBeNull()
   expect(LEAVE_MS).toBeGreaterThan(WAVE_MS + 550)
-  const svg = minisSvg([{ id: 'a', color: 'pink', state: 'here', age: 0 }, { id: 'b', color: 'sky', state: 'here', age: 5000 }, { id: 'c', color: 'lime', state: 'bye', age: 100 }]).svg
-  expect(svg.match(/type="scale"/g)).toHaveLength(1)
-  expect(svg).toContain('values="1;0" dur="800ms"')
+})
+
+const TONES_DARK = { label: '#9a9aa2', text: '#e6e6e6' }
+const line = (minis: { id: string; color: string; state: 'here' | 'bye'; age: number }[]) => ({ minis, percent: 40, from: 40, isWorking: false, limits: [], hasInfo: true, tones: TONES_DARK })
+
+test('desktop: a new helper opens its slot at the left, pushing the line right, then pops in', () => {
+  const before = lineTwoSvg(line([{ id: 'old', color: 'sky', state: 'here', age: 9000 }]), undefined)
+  expect(before.layout.get('old')).toBe(0)
+  const after = lineTwoSvg(line([{ id: 'new', color: 'pink', state: 'here', age: 0 }, { id: 'old', color: 'sky', state: 'here', age: 9050 }]), before.layout)
+  expect(after.layout.get('new')).toBe(0)
+  expect(after.layout.get('old')).toBe(34)
+  // The old helper and the bar glide right from where they were; the new one springs out once its slot is open.
+  expect(after.svg).toContain('values="0 5;34 5"')
+  expect(after.svg).toContain(`values="${before.layout.get('content')} 0;${after.layout.get('content')} 0"`)
+  expect(after.svg).toContain(`begin="${SLOT_MS}ms"`)
+  // A helper still queued (negative age) takes no slot yet.
+  expect(lineTwoSvg(line([{ id: 'q', color: 'lime', state: 'here', age: -200 }]), undefined).layout.has('q')).toBe(false)
+  // Gone: the line glides back left.
+  const gone = lineTwoSvg(line([]), after.layout)
+  expect(gone.svg).toContain(`values="${after.layout.get('content')} 0;0 0"`)
+})
+
+test('terminal: a slot widens a column at a time, holds, then narrows as the helper leaves', () => {
+  expect(slotWidth('here', -100)).toBe(0)
+  expect(slotWidth('here', 0)).toBe(0)
+  expect(slotWidth('here', SLOT_MS / 2)).toBeGreaterThan(0)
+  expect(slotWidth('here', SLOT_MS / 2)).toBeLessThan(MINI_W + 1)
+  expect(slotWidth('here', SLOT_MS * 2)).toBe(MINI_W + 1)
+  expect(slotWidth('bye', 100)).toBe(MINI_W + 1)
+  expect(slotWidth('bye', LEAVE_MS - 50)).toBeLessThan(MINI_W + 1)
+  expect(slotWidth('bye', LEAVE_MS)).toBe(0)
 })
 
 test('a new session starts asleep; typing wakes it slowly, then it reads along', async ($, on) => {
@@ -274,14 +304,21 @@ test('a subagent hatches a helper; when it finishes the helper waves bye and lea
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/r' }))
   on('agent.list', () => ({ value: [] }))
-  on('agent.spawn', () => ({ agentId: 'ag-1', model: 'x' }) as never)
+  on('agent.spawn', ($, e) => ({ agentId: (e as { tool_use_id: string }).tool_use_id === 'tu-1' ? 'ag-1' : 'ag-2', model: 'x' }) as never)
   on('turn.complete', ($, e) => ({ text: e.answer }))
   await $.session.start({ cwd: '/r', surface: 'terminal', isInteractive: true })
   await $.agent.spawn({ subagentType: 'Explore', prompt: 'p', description: 'd', tool_use_id: 'tu-1' } as never)
+  await $.agent.spawn({ subagentType: 'Plan', prompt: 'p', description: 'd', tool_use_id: 'tu-2' } as never)
   const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 12 } as never })
-  expect(JSON.stringify(await ui.drawn())).toContain('Explore helper')
+  // Two started together: the second waits its turn, then takes the leftmost slot.
+  const first = JSON.stringify(await ui.drawn())
+  expect(first).toContain('Explore helper')
+  await clock.advance(500)
+  expect(JSON.stringify(await ui.drawn())).toContain('Plan helper')
   await $.turn.complete({ answer: 'found it', durationMs: 900, isAborted: false, turnId: 't', reason: 'answer', agentId: 'ag-1' })
   expect(JSON.stringify(await ui.drawn())).toContain('Explore helper waving bye')
   await clock.advance(LEAVE_MS + 1500)
-  expect(JSON.stringify(await ui.drawn())).not.toContain('helper')
+  const later = JSON.stringify(await ui.drawn())
+  expect(later).not.toContain('Explore helper')
+  expect(later).toContain('Plan helper') // its agent is still running
 })
