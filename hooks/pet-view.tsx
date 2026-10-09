@@ -5,9 +5,9 @@ import type { ClientModule } from 'claude-code'
 import type { Mood } from '../types'
 import { blend, sprite, toRuns } from './sprite'
 
-export type PetViewProps = { mood: Mood; level: number; look: number }
+export type PetViewProps = { mood: Mood; level: number; look: number; color: string }
 
-type Ref = { t: number; mood: Mood; level: number; from?: { mood: Mood; level: number; at: number } }
+type Ref = { t: number; mood: Mood; level: number; color: string; from?: { mood: Mood; level: number; color: string; at: number } }
 type State = { ref: Ref }
 
 const FRAME_MS = 100
@@ -15,11 +15,12 @@ const FADE_MS = 350
 
 const PetView: ClientModule<PetViewProps, State> = (props, surface) => {
   const { Box, Text } = surface.elements
-  const ref = surface.state?.ref ?? { t: 0, mood: props.mood, level: props.level }
-  if (props.mood !== ref.mood || props.level !== ref.level) {
-    ref.from = { mood: ref.mood, level: ref.level, at: ref.t }
+  const ref = surface.state?.ref ?? { t: 0, mood: props.mood, level: props.level, color: props.color }
+  if (props.mood !== ref.mood || props.level !== ref.level || props.color !== ref.color) {
+    ref.from = { mood: ref.mood, level: ref.level, color: ref.color, at: ref.t }
     ref.mood = props.mood
     ref.level = props.level
+    ref.color = props.color
   }
   if (surface.state === undefined) {
     surface.setState({ ref })
@@ -30,11 +31,11 @@ const PetView: ClientModule<PetViewProps, State> = (props, surface) => {
     })
   }
 
-  let grid = sprite(ref.mood, ref.t, ref.level, props.look)
+  let grid = sprite(ref.mood, ref.t, ref.level, props.look, ref.color)
   if (ref.from) {
     const k = (ref.t - ref.from.at) / FADE_MS
     if (k >= 1) ref.from = undefined
-    else grid = blend(sprite(ref.from.mood, ref.t, ref.from.level), grid, k * k * (3 - 2 * k)) // smoothstep
+    else grid = blend(sprite(ref.from.mood, ref.t, ref.from.level, 0, ref.from.color), grid, k * k * (3 - 2 * k)) // smoothstep
   }
 
   return (

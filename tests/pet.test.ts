@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { reactionTo, xpBar } from '../hooks/register'
-import { HEIGHT, WIDTH, blend, formFor, levelFor, petSvg, sprite, toRuns, xpFor } from '../hooks/sprite'
+import { COLORS, HEIGHT, WIDTH, blend, formFor, levelFor, paletteFor, petSvg, sprite, toRuns, xpFor } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved'] as const
 
@@ -89,4 +89,26 @@ test('the eyes sweep across as the caret moves along a line', () => {
   const left = JSON.stringify(sprite('reading', 0, 1, -1))
   expect(left).not.toBe(JSON.stringify(sprite('reading', 0, 1, 1)))
   for (const mood of ['reading', 'wince', 'shocked'] as const) expect(petSvg(mood, 1).length).toBeGreaterThan(200)
+})
+
+test('a picked colour overrides the level, auto follows it', () => {
+  expect(paletteFor(1, 'pink')).toBe(COLORS.pink!)
+  expect(paletteFor(6, 'auto')).toEqual(formFor(6))
+  expect(paletteFor(6, 'nonsense')).toEqual(formFor(6))
+  expect(JSON.stringify(sprite('idle', 0, 1, 0, 'pink'))).toContain(String(COLORS.pink!.body))
+  expect(petSvg('idle', 1, undefined, 0, 'mint')).toContain('#86efac')
+  // Changing colour fades from the old one.
+  expect(petSvg('idle', 1, { mood: 'idle', level: 1, color: 'teal' }, 0, 'pink')).toContain('values="1;0" dur="350ms"')
+})
+
+test('/pet color picks, lists and resets, and the band follows', async ($, on) => {
+  mock.store(on)
+  mock.clock(on)
+  on('command.run', () => ({}))
+  const run = (args: string) => $.command.run({ command: 'pet', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect((await run('color pink')).text).toContain('now pink')
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12 } as never })
+  expect(JSON.stringify(await ui.drawn())).toContain('f9a8d4')
+  expect((await run('color rainbow')).text).toContain('Colours: auto, teal')
+  expect((await run('color auto')).text).toContain('follows its level')
 })

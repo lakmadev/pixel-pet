@@ -4,6 +4,7 @@ export type PetView = {
   mood: Mood
   line: string
   name: string
+  color: string
   level: number
   xp: number
   levelXp: number

@@ -6,6 +6,7 @@
   "types": "./types/index.d.ts",
   "userConfig": {
     "name": { "type": "string", "title": "Pet name", "description": "What your pet is called (change any time with /pet rename).", "default": "Bit" },
+    "color": { "type": "string", "title": "Pet colour", "description": "auto follows its level; or pick one (also /pet color <name>).", "default": "auto", "options": ["auto", "teal", "purple", "coral", "gold", "pink", "mint", "sky", "lava", "ghost", "midnight"] },
     "sound": { "type": "boolean", "title": "Level-up sound", "description": "Play a short jingle when your pet levels up (macOS).", "default": true }
   }
 }

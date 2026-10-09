@@ -14,6 +14,23 @@ export const FORMS = [
 
 export const formFor = (level: number) => FORMS.find(form => level >= form.minLevel)!
 
+// Colours a person can pick with /pet color; 'auto' follows the level's form.
+export const COLORS: Record<string, { body: number; edge: number }> = {
+  teal: { body: 0x4fd1c5, edge: 0x1f7a73 },
+  purple: { body: 0x8b7cf6, edge: 0x4b3cb0 },
+  coral: { body: 0xff8a65, edge: 0xb2462a },
+  gold: { body: 0xf6c945, edge: 0x9c7a12 },
+  pink: { body: 0xf9a8d4, edge: 0xbe185d },
+  mint: { body: 0x86efac, edge: 0x15803d },
+  sky: { body: 0x7dd3fc, edge: 0x0369a1 },
+  lava: { body: 0xf87171, edge: 0x991b1b },
+  ghost: { body: 0xe5e7eb, edge: 0x6b7280 },
+  midnight: { body: 0x64748b, edge: 0x1e293b },
+}
+export const COLOR_NAMES = ['auto', ...Object.keys(COLORS)]
+
+export const paletteFor = (level: number, color = 'auto') => COLORS[color] ?? formFor(level)
+
 // Level n starts at 40 * (n-1)^2 XP: 4 turns to level 2, ~64 to level 5, ~300 to level 10.
 export const levelFor = (xp: number) => Math.floor(Math.sqrt(xp / 40)) + 1
 export const xpFor = (level: number) => (level - 1) ** 2 * 40
@@ -77,11 +94,11 @@ const wave = (t: number, period: number) => 0.5 - 0.5 * Math.cos((2 * Math.PI * 
 export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100) < 120
 
 // look: where the eyes point, -1 left, 0 ahead, 1 right (reading along as you type).
-type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; withBody?: boolean; withExtras?: boolean }
+type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; color?: string; withBody?: boolean; withExtras?: boolean }
 
 // One still frame. The terminal animates by drawing many of these; the desktop SVG layers a few.
-export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, look = 0, withBody = true, withExtras = true }: Pose = {}): Grid {
-  const { body, edge } = formFor(level)
+export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, look = 0, color = 'auto', withBody = true, withExtras = true }: Pose = {}): Grid {
+  const { body, edge } = paletteFor(level, color)
   const eyes: Eyes =
     mood === 'happy' || mood === 'loved' ? 'happy'
     : mood === 'sleepy' ? 'closed'
@@ -120,7 +137,7 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
 }
 
 // The frame at time t: bob or shake on the mood's rhythm, blink now and then, twinkle the extras.
-export function sprite(mood: Mood, t: number, level: number, look = 0): Grid {
+export function sprite(mood: Mood, t: number, level: number, look = 0, color = 'auto'): Grid {
   const rhythm = RHYTHM[mood]
   const phase = wave(t, rhythm.period)
   return draw(mood, level, {
@@ -129,6 +146,7 @@ export function sprite(mood: Mood, t: number, level: number, look = 0): Grid {
     blink: isBlinking(t),
     odd: Math.floor(t / 350) % 2 === 1,
     look,
+    color,
   })
 }
 
@@ -176,7 +194,7 @@ export function toRuns(grid: Grid): Run[][] {
 // an eased curve (smoother than whole pixels), blinks and twinkles switch layers, and a mood change
 // fades the previous pose out. Every animated layer rests where a still image should be, so a
 // surface that ignores SMIL still shows a clean pet.
-export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number }, look = 0, px = 5): string {
+export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number; color?: string }, look = 0, color = 'auto', px = 5): string {
   // Pixels as rects, a row's same-coloured neighbours merged; with `over`, only the pixels that differ from it.
   const rects = (grid: Grid, over?: Grid) =>
     grid.map((row, y) => {
@@ -197,16 +215,16 @@ export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: nu
     : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
   const toggle = (dur: number, on: string) => `<animate attributeName="opacity" values="0;1" keyTimes="0;${on}" calcMode="discrete" dur="${dur}ms" repeatCount="indefinite"/>`
 
-  const base = draw(mood, level, { withExtras: false, look })
-  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false, look }), base)}${toggle(3700, '0.962')}</g>` : ''
-  const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { odd: true, withExtras: false }), base)}${toggle(700, '0.5')}</g>` : ''
+  const base = draw(mood, level, { withExtras: false, look, color })
+  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false, look, color }), base)}${toggle(3700, '0.962')}</g>` : ''
+  const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { odd: true, withExtras: false, color }), base)}${toggle(700, '0.5')}</g>` : ''
   const extrasA = rects(draw(mood, level, { withBody: false }))
   const extrasB = rects(draw(mood, level, { withBody: false, odd: true }))
   const twinkle = extrasA || extrasB
     ? `<g>${extrasA}<animate attributeName="opacity" values="1;0" keyTimes="0;0.5" calcMode="discrete" dur="700ms" repeatCount="indefinite"/></g><g opacity="0">${extrasB}${toggle(700, '0.5')}</g>`
     : ''
-  const fade = from && (from.mood !== mood || from.level !== level)
-    ? `<g opacity="0">${rects(draw(from.mood, from.level))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
+  const fade = from && (from.mood !== mood || from.level !== level || (from.color ?? 'auto') !== color)
+    ? `<g opacity="0">${rects(draw(from.mood, from.level, { color: from.color }))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
     : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * px}" height="${HEIGHT * px}" viewBox="0 0 ${WIDTH * px} ${HEIGHT * px}" shape-rendering="crispEdges"><g>${rects(base)}${blink}${glance}${motion}</g>${twinkle}${fade}</svg>`
 }

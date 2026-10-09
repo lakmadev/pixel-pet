@@ -3,9 +3,9 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Mood, PetView } from '../types'
 import type { PetViewProps } from './pet-view'
-import { formFor, levelFor, petSvg, xpFor } from './sprite'
+import { COLOR_NAMES, formFor, levelFor, petSvg, xpFor } from './sprite'
 
-type Pet = { name: string; xp: number; born: number; turns: number; pets: number }
+type Pet = { name: string; xp: number; born: number; turns: number; pets: number; color?: string }
 
 const LINES: Record<Mood, string[]> = {
   idle: ['is waiting for you', 'is vibing', 'is counting pixels', 'is guarding your repo', 'is humming quietly'],
@@ -24,13 +24,16 @@ const SLEEP_AFTER_MS = 5 * 60_000
 
 export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
   const level = levelFor(pet.xp)
-  return { mood, line, name: pet.name, level, xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1), form: formFor(level).name, isHidden }
+  return { mood, line, name: pet.name, color: pet.color ?? defaultColor, level, xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1), form: formFor(level).name, isHidden }
 }
 
 export function xpBar(view: Pick<PetView, 'xp' | 'levelXp' | 'nextXp'>, width = 10): string {
   const filled = Math.round(((view.xp - view.levelXp) / (view.nextXp - view.levelXp)) * width)
   return '▰'.repeat(filled) + '▱'.repeat(width - filled)
 }
+
+// The configured colour, used until /pet color picks one.
+let defaultColor = 'auto'
 
 const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
 
@@ -45,8 +48,8 @@ let contextPercent = 0
 let look = 0
 let lastLine = ''
 // What the desktop last drew, so a change of mood or form fades from it.
-let shown: { mood: Mood; level: number } | undefined
-let fadeFrom: { mood: Mood; level: number; at: number } | undefined
+let shown: { mood: Mood; level: number; color: string } | undefined
+let fadeFrom: { mood: Mood; level: number; color: string; at: number } | undefined
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
@@ -119,9 +122,10 @@ async function checkMood($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   const sound = options.sound !== false
+  defaultColor = COLOR_NAMES.includes(String(options.color)) ? String(options.color) : 'auto'
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'pet', description: 'Your pixel pet: stats, or show / hide / rename <name>', argumentHint: '[show|hide|rename <name>]' })
+    await $.command.register({ name: 'pet', description: 'Your pixel pet: stats, or show / hide / rename <name> / color <name>', argumentHint: '[show|hide|rename <name>|color <name>]' })
     const now = await $.clock.now()
     const saved = (await $.store.get('pet')) as Pet | undefined
     pet = saved ?? { name: String(options.name ?? 'Bit'), xp: 0, born: now, turns: 0, pets: 0 }
@@ -185,6 +189,14 @@ export const register: Register = (on, options) => {
       await update($, view, current => ({ ...current, isHidden: verb === 'hide' }))
       return { text: verb === 'hide' ? `${pet.name} is resting off-screen. /pet show brings it back.` : `${pet.name} is back!` }
     }
+    if (verb === 'color' || verb === 'colour') {
+      const choice = (rest[0] ?? '').toLowerCase()
+      if (!COLOR_NAMES.includes(choice)) return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
+      pet = { ...pet, color: choice === 'auto' ? undefined : choice }
+      await $.store.set('pet', pet)
+      await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
+      return { text: choice === 'auto' ? `${pet.name} follows its level's colours again.` : `${pet.name} is now ${choice}.` }
+    }
     if (verb === 'rename' && rest.length) {
       pet = { ...pet, name: rest.join(' ').slice(0, 24) }
       await $.store.set('pet', pet)
@@ -195,7 +207,7 @@ export const register: Register = (on, options) => {
     const days = Math.max(0, Math.floor(((await $.clock.now()) - pet.born) / 86_400_000))
     return {
       text: [
-        `${pet.name} · level ${level} ${formFor(level).name}`,
+        `${pet.name} · level ${level} ${formFor(level).name} · ${pet.color ?? defaultColor} colour`,
         `XP ${xpBar({ xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1) })} ${pet.xp}/${xpFor(level + 1)}`,
         `${pet.turns} turns together · petted ${pet.pets} times · ${days} days old`,
         level < 10 ? `Next form at level ${[3, 6, 10].find(l => l > level)}; a crown at level 10.` : 'Fully evolved. Legendary.',
@@ -231,7 +243,7 @@ export const register: Register = (on, options) => {
     // into pixels, so the pet is an SVG with its motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
-      const props: PetViewProps = { mood: current.mood, level: current.level, look }
+      const props: PetViewProps = { mood: current.mood, level: current.level, look, color: current.color }
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={props} />
@@ -240,10 +252,10 @@ export const register: Register = (on, options) => {
       )
     }
     const now = await $.clock.now()
-    if (shown && (shown.mood !== current.mood || shown.level !== current.level)) fadeFrom = { ...shown, at: now }
-    shown = { mood: current.mood, level: current.level }
+    if (shown && (shown.mood !== current.mood || shown.level !== current.level || shown.color !== current.color)) fadeFrom = { ...shown, at: now }
+    shown = { mood: current.mood, level: current.level, color: current.color }
     const { Svg } = $.ui.resolve(e)
-    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look)
+    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)
     return (
       <Box gap={2} alignItems="center">
         <Svg source={svg} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
