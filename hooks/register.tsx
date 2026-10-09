@@ -156,9 +156,9 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, view)
     if (e.props.hasSurvey || current.isHidden) return next(e)
-    const elements = $.ui.resolve(e)
-    const { Box, Text, Button } = elements
-    bandId = 'Raster' in elements ? e.requestId : undefined
+    const { Box, Text, Button } = $.ui.resolve(e)
+    // Choose by surface: every table lists Raster, but only the terminal draws it.
+    bandId = e.surface === 'terminal' ? e.requestId : undefined
 
     const onPet = async () => {
       pet = { ...pet, pets: pet.pets + 1 }
@@ -180,8 +180,8 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    if ('Raster' in elements) {
-      const { Raster } = elements
+    if (e.surface === 'terminal') {
+      const { Raster } = $.ui.resolve(e)
       if (e.props.maxRows < 6) return next(e)
       return (
         <Box gap={2}>
@@ -190,16 +190,13 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    if ('Svg' in elements) {
-      const { Svg } = elements
-      const svg = toSvg([sprite(current.mood, 1, current.level), sprite(current.mood, 2, current.level)])
-      return (
-        <Box gap={2} alignItems="center">
-          <Svg source={svg} alt={`${current.name} the pixel pet, ${current.mood}`} width={72} height={72} isInteractive />
-          {info}
-        </Box>
-      )
-    }
-    return next(e)
+    const { Svg } = $.ui.resolve(e)
+    const svg = toSvg([sprite(current.mood, 1, current.level), sprite(current.mood, 2, current.level)])
+    return (
+      <Box gap={2} alignItems="center">
+        <Svg source={svg} alt={`${current.name} the pixel pet, ${current.mood}`} width={72} height={72} isInteractive />
+        {info}
+      </Box>
+    )
   })
 }

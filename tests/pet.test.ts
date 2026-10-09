@@ -42,5 +42,6 @@ test('draws the band on terminal and desktop', async ($, on) => {
     })
     expect(await ui.find({ text: 'Lv 1' })).toBeDefined()
     expect(await ui.find({ key: 'pet' })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).toContain(surface === 'terminal' ? '"type":"Raster"' : '"type":"Svg"')
   }
 })
