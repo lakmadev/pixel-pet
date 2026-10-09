@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { xpBar } from '../hooks/register'
+import { reactionTo, xpBar } from '../hooks/register'
 import { HEIGHT, WIDTH, blend, formFor, levelFor, petSvg, sprite, toRuns, xpFor } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved'] as const
@@ -67,4 +67,26 @@ test('the band: a live text sprite in the terminal, an SVG on desktop, one sente
     if (surface === 'terminal') expect(JSON.stringify(await ui.drawn({ in: 'pet' }))).toContain('▀')
     await ui.unmount()
   }
+})
+
+const edit = (text: string, start: number, end: number, inputText: string, key: unknown = { key: 'x' }) => ({ text, cursor: start, start, end, inputText, key })
+
+test('reacts to typing, code, small and big deletes, pastes and manners', () => {
+  expect(reactionTo(edit('hello', 5, 5, ' ')))?.toMatchObject({ mood: 'reading' })
+  expect(reactionTo(edit('const x ', 8, 8, '='))!.line).toBe('is reading your code…')
+  expect(reactionTo(edit('helo', 3, 4, ''))).toMatchObject({ mood: 'wince' })
+  expect(reactionTo(edit('a long sentence I regret', 0, 24, ''))).toMatchObject({ mood: 'shocked' })
+  expect(reactionTo({ ...edit('', 0, 0, 'x'.repeat(200)), key: undefined })!.line).toBe("whoa, that's a lot of text")
+  expect(reactionTo(edit('fix it please', 13, 13, ' '))).toMatchObject({ mood: 'loved' })
+  expect(reactionTo(edit('there is a bug', 14, 14, ' '))!.line).toBe('spots the bug 👀')
+  expect(reactionTo(edit('abc', 1, 1, ''))).toBeUndefined()
+})
+
+test('the eyes sweep across as the caret moves along a line', () => {
+  expect(reactionTo(edit('', 0, 0, 'a'))!.look).toBe(-1)
+  expect(reactionTo(edit('x'.repeat(14), 14, 14, 'a'))!.look).toBe(0)
+  expect(reactionTo(edit('x'.repeat(27), 27, 27, 'a'))!.look).toBe(1)
+  const left = JSON.stringify(sprite('reading', 0, 1, -1))
+  expect(left).not.toBe(JSON.stringify(sprite('reading', 0, 1, 1)))
+  for (const mood of ['reading', 'wince', 'shocked'] as const) expect(petSvg(mood, 1).length).toBeGreaterThan(200)
 })

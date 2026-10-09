@@ -1,4 +1,4 @@
-export type Mood = 'idle' | 'working' | 'happy' | 'oops' | 'sleepy' | 'loved'
+export type Mood = 'idle' | 'working' | 'happy' | 'oops' | 'sleepy' | 'loved' | 'reading' | 'wince' | 'shocked'
 
 export type PetView = {
   mood: Mood

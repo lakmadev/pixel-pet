@@ -11,6 +11,7 @@ A tiny animated pixel-art companion that lives above your Claude Code prompt and
 ```
 
 - **Bobs** while Claude works, **bounces with sparkles** when a turn finishes, **sweats** when a command fails, **dozes** after 5 idle minutes. Press **♥ pet** (or `ctrl+x tab`, then `p`) and it blushes.
+- **Watches you type.** Its eyes follow your caret across the line as if reading along ("is reading your code…" when it looks like code). A backspace makes it wince; deleting a big chunk makes it gasp with a "!". A huge paste gets a "whoa", and saying please or thanks makes it blush. It settles back about 2 seconds after you stop.
 - Smooth: blinks, eased bobbing, and moods that **fade** into each other instead of popping.
 - Small and frameless. In the terminal it's four rows of half-block characters animated at 10 fps; in the desktop app it's a crisp transparent SVG whose motion is built in, gliding between pixels.
 - Levels up every turn and changes colour as it grows: teal sprout → purple spark (lv 3) → coral blaze (lv 6) → golden legend with a crown (lv 10). Level-ups play a short jingle.

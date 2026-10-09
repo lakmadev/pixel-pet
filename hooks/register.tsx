@@ -14,6 +14,9 @@ const LINES: Record<Mood, string[]> = {
   oops: ["saw an error. it's fine. everything's fine.", 'is sweating nervously', "says: that wasn't supposed to happen"],
   sleepy: ['is asleep. zzz', 'dreams of green tests', 'is napping on your keyboard'],
   loved: ['loves you back ♥', 'purrs in binary', 'is blushing in pixels'],
+  reading: ['is reading along…', 'is peeking at what you type 👀', 'is following every keystroke', 'is taking notes'],
+  wince: ['winces at the typo', 'pretends not to see that', 'says: backspace, backspace'],
+  shocked: ['gasps: where did it all go?!', 'is shocked by the delete', 'clutches its pixels'],
 }
 
 const pick = (list: readonly string[]) => list[Math.floor(Math.random() * list.length)]!
@@ -38,6 +41,9 @@ let moodUntil = 0
 let isWorking = false
 let lastActive = 0
 let contextPercent = 0
+// Where the eyes point while reading along (-1 left … 1 right), and what the band last said.
+let look = 0
+let lastLine = ''
 // What the desktop last drew, so a change of mood or form fades from it.
 let shown: { mood: Mood; level: number } | undefined
 let fadeFrom: { mood: Mood; level: number; at: number } | undefined
@@ -54,6 +60,40 @@ async function setMood($: EngineInterface, next: Mood, forMs = 0) {
   mood = next
   const line = next === 'idle' && contextPercent >= 80 ? `is stuffed with tokens (${contextPercent}% context)` : pick(LINES[next])
   await update($, view, current => viewOf(pet, next, line, current.isHidden))
+}
+
+const CODEY = /[{}();=<>[\]`]|=>|\b(function|const|def|class|import|return)\b/
+
+// How the pet reacts to one edit of the draft: what changed, where the caret is, and what the draft says.
+export function reactionTo(e: { text: string; cursor: number; start: number; end: number; inputText: string; key?: unknown }) {
+  const removed = e.end - e.start
+  const draft = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
+  const caret = e.start + e.inputText.length
+  // The eyes sweep left to right across each 30 characters, like reading a line.
+  const look = Math.round(((caret % 30) / 30) * 2 - 1)
+  if (removed >= 10 || (removed > 0 && draft.trim() === '')) return { mood: 'shocked' as const, look, line: undefined }
+  if (removed > 0) return { mood: 'wince' as const, look, line: undefined }
+  if (e.inputText.length > 40 && e.key === undefined) return { mood: 'shocked' as const, look, line: "whoa, that's a lot of text" }
+  if (e.inputText === '') return undefined // a bare caret move
+  const lastWords = draft.slice(-24).toLowerCase()
+  if (/\b(please|thanks|thank you|ty)\s?$/.test(lastWords)) return { mood: 'loved' as const, look, line: 'appreciates your manners ♥' }
+  if (/\bbug\s?$/.test(lastWords)) return { mood: 'reading' as const, look, line: 'spots the bug 👀' }
+  return { mood: 'reading' as const, look, line: CODEY.test(draft) ? 'is reading your code…' : undefined }
+}
+
+// Typing moods hold while the keys keep coming and fade ~2s after the last one. Only a change of
+// mood, gaze or words touches the band, so a run of keystrokes costs a handful of redraws.
+async function react($: EngineInterface, reaction: NonNullable<ReturnType<typeof reactionTo>>) {
+  const now = await $.clock.now()
+  lastActive = now
+  moodUntil = now + 2000
+  const isSame = mood === reaction.mood && look === reaction.look && (reaction.line === undefined || reaction.line === lastLine)
+  look = reaction.look
+  if (isSame) return
+  const isNewMood = mood !== reaction.mood
+  mood = reaction.mood
+  if (reaction.line !== undefined || isNewMood) lastLine = reaction.line ?? pick(LINES[reaction.mood])
+  await update($, view, current => viewOf(pet, reaction.mood, lastLine, current.isHidden))
 }
 
 async function gainXp($: EngineInterface, amount: number, sound: boolean) {
@@ -92,9 +132,18 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Keystrokes in the prompt box: answer at once, react off the typing path.
+  on('prompt.edit', async ($, e, next) => {
+    const box = await next(e)
+    const reaction = reactionTo(e)
+    if (reaction) react($, reaction).catch(() => undefined)
+    return box
+  })
+
   on('prompt.submit', async ($, e, next) => {
     lastActive = await $.clock.now()
-    if (mood === 'sleepy') await setMood($, 'idle')
+    look = 0
+    if (mood === 'sleepy' || mood === 'reading' || mood === 'wince' || mood === 'shocked') await setMood($, 'idle')
     return next(e)
   })
 
@@ -182,7 +231,7 @@ export const register: Register = (on, options) => {
     // into pixels, so the pet is an SVG with its motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
-      const props: PetViewProps = { mood: current.mood, level: current.level }
+      const props: PetViewProps = { mood: current.mood, level: current.level, look }
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={props} />
@@ -194,7 +243,7 @@ export const register: Register = (on, options) => {
     if (shown && (shown.mood !== current.mood || shown.level !== current.level)) fadeFrom = { ...shown, at: now }
     shown = { mood: current.mood, level: current.level }
     const { Svg } = $.ui.resolve(e)
-    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined)
+    const svg = petSvg(current.mood, current.level, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look)
     return (
       <Box gap={2} alignItems="center">
         <Svg source={svg} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />

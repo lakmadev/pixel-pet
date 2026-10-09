@@ -38,8 +38,8 @@ const BODY = [
   '.oo..oo.',
 ]
 
-type Eyes = 'open' | 'glance' | 'closed' | 'happy' | 'dizzy'
-type Mouth = 'smile' | 'open' | 'flat' | 'o'
+type Eyes = 'open' | 'glance' | 'closed' | 'happy' | 'dizzy' | 'wide'
+type Mouth = 'smile' | 'open' | 'flat' | 'o' | 'gasp'
 
 // Eyes are 1x2 at body columns 2 and 5, rows 2-3: [top, bottom].
 const EYES: Record<Eyes, [string, string]> = {
@@ -48,16 +48,21 @@ const EYES: Record<Eyes, [string, string]> = {
   closed: ['b', 'k'],
   happy: ['k', 'b'],
   dizzy: ['k', 'w'],
+  wide: ['k', 'k'],
 }
 const MOUTHS: Record<Mouth, [x: number, y: number, c: 'k' | 'r'][]> = {
   smile: [[3, 5, 'k'], [4, 5, 'k']],
   open: [[3, 4, 'k'], [4, 4, 'k'], [3, 5, 'r'], [4, 5, 'r']],
   flat: [[2, 5, 'k'], [3, 5, 'k'], [4, 5, 'k'], [5, 5, 'k']],
   o: [],
+  gasp: [[3, 4, 'k'], [4, 4, 'k'], [3, 5, 'k'], [4, 5, 'k']],
 }
 
 // Rhythm per mood: how fast it bobs (ms per cycle) and whether it shakes instead.
 const RHYTHM: Record<Mood, { period: number; shake?: boolean; still?: boolean }> = {
+  reading: { period: 1400 },
+  wince: { period: 200, shake: true },
+  shocked: { period: 300 },
   idle: { period: 2400 },
   working: { period: 640 },
   happy: { period: 480 },
@@ -71,19 +76,22 @@ const wave = (t: number, period: number) => 0.5 - 0.5 * Math.cos((2 * Math.PI * 
 // Blink for 140ms every few seconds, at a beat that doesn't look mechanical.
 export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100) < 120
 
-type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; withBody?: boolean; withExtras?: boolean }
+// look: where the eyes point, -1 left, 0 ahead, 1 right (reading along as you type).
+type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; withBody?: boolean; withExtras?: boolean }
 
 // One still frame. The terminal animates by drawing many of these; the desktop SVG layers a few.
-export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, withBody = true, withExtras = true }: Pose = {}): Grid {
+export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = false, odd = false, look = 0, withBody = true, withExtras = true }: Pose = {}): Grid {
   const { body, edge } = formFor(level)
   const eyes: Eyes =
     mood === 'happy' || mood === 'loved' ? 'happy'
     : mood === 'sleepy' ? 'closed'
     : mood === 'oops' ? 'dizzy'
+    : mood === 'wince' ? 'closed'
+    : mood === 'shocked' ? 'wide'
     : blink ? 'closed'
     : mood === 'working' && odd ? 'glance'
     : 'open'
-  const mouth: Mouth = mood === 'happy' ? 'open' : mood === 'oops' ? 'flat' : mood === 'sleepy' ? 'o' : 'smile'
+  const mouth: Mouth = mood === 'happy' ? 'open' : mood === 'oops' || mood === 'wince' ? 'flat' : mood === 'sleepy' ? 'o' : mood === 'shocked' ? 'gasp' : 'smile'
 
   const grid: Grid = Array.from({ length: HEIGHT }, () => Array<number | null>(WIDTH).fill(null))
   const ox = 1 + dx
@@ -95,7 +103,8 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
 
   if (withBody) {
     BODY.forEach((row, y) => [...row].forEach((c, x) => c !== '.' && put(ox + x, oy + y, paint[c as keyof typeof paint])))
-    for (const col of [2, 5]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
+    const shift = mood === 'reading' ? Math.max(-1, Math.min(1, Math.round(look))) : 0
+    for (const col of [2 + shift, 5 + shift]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
     for (const [x, y, c] of MOUTHS[mouth]) put(ox + x, oy + y, paint[c])
     if (level >= 10) for (const x of [2, 3, 4, 5]) put(ox + x, oy, x === 2 || x === 5 ? GOLD : SPARK) // a crown along the top edge
   }
@@ -104,12 +113,14 @@ export function draw(mood: Mood, level: number, { lift = 0, dx = 0, blink = fals
     if (mood === 'oops') put(9, 2 + (odd ? 1 : 0), SWEAT)
     if (mood === 'sleepy') put(odd ? 9 : 8, odd ? 0 : 1, ZZZ)
     if (mood === 'loved') for (const [x, y] of odd ? [[8, 0], [9, 1]] : [[0, 0], [1, 1]]) put(x!, y!, HEART)
+    if (mood === 'shocked') for (const y of [0, 1, 3]) put(9, y, odd ? SPARK : 0xff6b6b) // a blinking "!"
+    if (mood === 'wince') put(odd ? 9 : 8, 2, SWEAT)
   }
   return grid
 }
 
 // The frame at time t: bob or shake on the mood's rhythm, blink now and then, twinkle the extras.
-export function sprite(mood: Mood, t: number, level: number): Grid {
+export function sprite(mood: Mood, t: number, level: number, look = 0): Grid {
   const rhythm = RHYTHM[mood]
   const phase = wave(t, rhythm.period)
   return draw(mood, level, {
@@ -117,6 +128,7 @@ export function sprite(mood: Mood, t: number, level: number): Grid {
     dx: rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0,
     blink: isBlinking(t),
     odd: Math.floor(t / 350) % 2 === 1,
+    look,
   })
 }
 
@@ -164,7 +176,7 @@ export function toRuns(grid: Grid): Run[][] {
 // an eased curve (smoother than whole pixels), blinks and twinkles switch layers, and a mood change
 // fades the previous pose out. Every animated layer rests where a still image should be, so a
 // surface that ignores SMIL still shows a clean pet.
-export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number }, px = 5): string {
+export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: number }, look = 0, px = 5): string {
   // Pixels as rects, a row's same-coloured neighbours merged; with `over`, only the pixels that differ from it.
   const rects = (grid: Grid, over?: Grid) =>
     grid.map((row, y) => {
@@ -185,8 +197,8 @@ export function petSvg(mood: Mood, level: number, from?: { mood: Mood; level: nu
     : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
   const toggle = (dur: number, on: string) => `<animate attributeName="opacity" values="0;1" keyTimes="0;${on}" calcMode="discrete" dur="${dur}ms" repeatCount="indefinite"/>`
 
-  const base = draw(mood, level, { withExtras: false })
-  const blink = mood === 'idle' || mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false }), base)}${toggle(3700, '0.962')}</g>` : ''
+  const base = draw(mood, level, { withExtras: false, look })
+  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, level, { blink: true, withExtras: false, look }), base)}${toggle(3700, '0.962')}</g>` : ''
   const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, level, { odd: true, withExtras: false }), base)}${toggle(700, '0.5')}</g>` : ''
   const extrasA = rects(draw(mood, level, { withBody: false }))
   const extrasB = rects(draw(mood, level, { withBody: false, odd: true }))

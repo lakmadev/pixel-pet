@@ -5,7 +5,7 @@ import type { ClientModule } from 'claude-code'
 import type { Mood } from '../types'
 import { blend, sprite, toRuns } from './sprite'
 
-export type PetViewProps = { mood: Mood; level: number }
+export type PetViewProps = { mood: Mood; level: number; look: number }
 
 type Ref = { t: number; mood: Mood; level: number; from?: { mood: Mood; level: number; at: number } }
 type State = { ref: Ref }
@@ -30,7 +30,7 @@ const PetView: ClientModule<PetViewProps, State> = (props, surface) => {
     })
   }
 
-  let grid = sprite(ref.mood, ref.t, ref.level)
+  let grid = sprite(ref.mood, ref.t, ref.level, props.look)
   if (ref.from) {
     const k = (ref.t - ref.from.at) / FADE_MS
     if (k >= 1) ref.from = undefined
