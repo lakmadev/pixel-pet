@@ -1,14 +1,19 @@
 # pixel-pet
 
-An animated pixel-art companion that lives above your Claude Code prompt and reacts to your session.
+A tiny animated pixel-art companion that lives above your Claude Code prompt and reacts to your session.
 
-![five evolution forms × six moods](docs/pixel-pet.png)
+![four forms × six moods](docs/pixel-pet.png)
 
-- **Bounces** while Claude works, **celebrates** finished turns with sparkles, **sweats** when a command fails, **naps** after 5 idle minutes.
-- Press **Pet ♥** (or `ctrl+x tab`, then `p`) and it blushes.
-- Earns XP every turn and **evolves**: teal sprout → purple spark (level 3) → antenna (5) → coral blaze (6) → golden crowned legend (10). Level-ups play a short jingle.
-- Notices when context is nearly full: "is stuffed with tokens (85% context)".
-- Pixel art in the terminal (half-block raster, animated at ~2 fps); an animated SVG in the desktop app.
+```
+ ▄▀▀▀▀▄   Bit is typing furiously…
+ █▀▄▄▀█   lv 3 spark  ♥ pet
+ ▀▄▄▄▄▀
+```
+
+- **Bobs** while Claude works, **bounces with sparkles** when a turn finishes, **sweats** when a command fails, **dozes** after 5 idle minutes. Press **♥ pet** (or `ctrl+x tab`, then `p`) and it blushes.
+- Smooth: it animates at 10 fps on the surface's own clock, with blinks and eased bobbing, and moods **crossfade** instead of popping.
+- Four rows tall, drawn with half-block characters, so empty pixels show your terminal or the desktop app behind it. There's no box around it.
+- Levels up every turn and changes colour as it grows: teal sprout → purple spark (lv 3) → coral blaze (lv 6) → golden legend with a crown (lv 10). Level-ups play a short jingle.
 
 ## Install
 
@@ -26,6 +31,6 @@ An animated pixel-art companion that lives above your Claude Code prompt and rea
 
 Settings (`/config`): `name`, `sound`.
 
-Part of [lakmadev/claude-mods](https://github.com/lakmadev/claude-mods), a pack of ten Claude Code mods.
+Part of [lakmadev/claude-mods](https://github.com/lakmadev/claude-mods), a pack of eleven Claude Code mods.
 
 MIT licensed.

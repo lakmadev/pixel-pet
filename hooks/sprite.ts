@@ -1,8 +1,9 @@
 import type { Mood } from '../types'
 
-// A 12x12 pixel canvas; null is see-through (the terminal's own background).
+// A 10x8 pixel canvas, two pixels per terminal row: 10 columns by 4 rows. null is see-through.
 export type Grid = (number | null)[][]
-export const SIZE = 12
+export const WIDTH = 10
+export const HEIGHT = 8
 
 export const FORMS = [
   { minLevel: 10, name: 'legend', body: 0xf6c945, edge: 0x9c7a12 },
@@ -25,130 +26,125 @@ const SPARK = 0xffe066
 const HEART = 0xff5c8a
 const SWEAT = 0x7fdbff
 const ZZZ = 0xcfd8ff
+const GOLD = 0xffd84d
 
 const BODY = [
-  '..oooooo..',
-  '.obbbbbbo.',
-  'obbbbbbbbo',
-  'obbbbbbbbo',
-  'obbbbbbbbo',
-  'obpbbbbpbo',
-  'obbbbbbbbo',
-  'obbbbbbbbo',
-  '.obbbbbbo.',
-  '..oo..oo..',
+  '..oooo..',
+  '.obbbbo.',
+  'obbbbbbo',
+  'obbbbbbo',
+  'opbbbbpo',
+  '.obbbbo.',
+  '.oo..oo.',
 ]
 
 type Eyes = 'open' | 'glance' | 'closed' | 'happy' | 'dizzy'
 type Mouth = 'smile' | 'open' | 'flat' | 'o'
-type Pose = { eyes: Eyes; mouth: Mouth; dx: number; dy: number; extras: [x: number, y: number, color: number][] }
 
-// Each eye is 2x2: [top-left, top-right, bottom-left, bottom-right]; 'b' is body color.
-const EYES: Record<Eyes, [left: string, right: string]> = {
-  open: ['kwkk', 'kwkk'],
-  glance: ['wkkk', 'wkkk'],
-  closed: ['bbkk', 'bbkk'],
-  happy: ['kkbb', 'kkbb'],
-  dizzy: ['kbbk', 'bkkb'],
+// Eyes are 1x2 at body columns 2 and 5, rows 2-3: [top, bottom].
+const EYES: Record<Eyes, [string, string]> = {
+  open: ['w', 'k'],
+  glance: ['k', 'k'],
+  closed: ['b', 'k'],
+  happy: ['k', 'b'],
+  dizzy: ['k', 'w'],
+}
+const MOUTHS: Record<Mouth, [x: number, y: number, c: 'k' | 'r'][]> = {
+  smile: [[3, 5, 'k'], [4, 5, 'k']],
+  open: [[3, 4, 'k'], [4, 4, 'k'], [3, 5, 'r'], [4, 5, 'r']],
+  flat: [[2, 5, 'k'], [3, 5, 'k'], [4, 5, 'k'], [5, 5, 'k']],
+  o: [],
 }
 
-const MOUTHS: Record<Mouth, [x: number, y: number, color: 'k' | 'r'][]> = {
-  smile: [[3, 5, 'k'], [4, 6, 'k'], [5, 6, 'k'], [6, 5, 'k']],
-  open: [[4, 6, 'k'], [5, 6, 'k'], [4, 7, 'r'], [5, 7, 'r']],
-  flat: [[3, 6, 'k'], [4, 6, 'k'], [5, 6, 'k'], [6, 6, 'k']],
-  o: [[4, 6, 'k'], [5, 6, 'k'], [4, 7, 'k'], [5, 7, 'k']],
+// Rhythm per mood: how fast it bobs (ms per cycle) and whether it shakes instead.
+const RHYTHM: Record<Mood, { period: number; shake?: boolean; still?: boolean }> = {
+  idle: { period: 2400 },
+  working: { period: 640 },
+  happy: { period: 480 },
+  oops: { period: 260, shake: true },
+  sleepy: { period: 3600, still: true },
+  loved: { period: 900 },
 }
 
-function pose(mood: Mood, frame: number): Pose {
-  const odd = frame % 2 === 1
-  switch (mood) {
-    case 'working':
-      return { eyes: odd ? 'glance' : 'open', mouth: 'smile', dx: 0, dy: odd ? 1 : 0, extras: [] }
-    case 'happy':
-      return { eyes: 'happy', mouth: 'open', dx: 0, dy: odd ? 1 : 0, extras: odd ? [[11, 1, SPARK], [0, 5, SPARK], [10, 0, SPARK]] : [[0, 2, SPARK], [11, 4, SPARK], [1, 0, SPARK]] }
-    case 'oops':
-      return { eyes: 'dizzy', mouth: 'flat', dx: odd ? 1 : -1, dy: 0, extras: [[11, 2, SWEAT], [11, 3, SWEAT]] }
-    case 'sleepy':
-      return { eyes: 'closed', mouth: 'o', dx: 0, dy: 0, extras: [[[9, 1], [10, 0], [11, 0]][frame % 3]!].map(([x, y]) => [x!, y!, ZZZ]) }
-    case 'loved': {
-      const x = odd ? 8 : 1
-      return { eyes: 'happy', mouth: 'smile', dx: 0, dy: odd ? 1 : 0, extras: [[x, 0, HEART], [x + 2, 0, HEART], [x + 1, 1, HEART]] }
-    }
-    default:
-      return { eyes: frame % 12 === 0 ? 'closed' : 'open', mouth: 'smile', dx: 0, dy: 0, extras: [] }
-  }
-}
+const wave = (t: number, period: number) => 0.5 - 0.5 * Math.cos((2 * Math.PI * (t % period)) / period)
 
-export function sprite(mood: Mood, frame: number, level: number): Grid {
+// Blink for 140ms every few seconds, at a beat that doesn't look mechanical.
+export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100) < 120
+
+export function sprite(mood: Mood, t: number, level: number): Grid {
   const { body, edge } = formFor(level)
-  const { eyes, mouth, dx, dy, extras } = pose(mood, frame)
-  const grid: Grid = Array.from({ length: SIZE }, () => Array<number | null>(SIZE).fill(null))
+  const rhythm = RHYTHM[mood]
+  const phase = wave(t, rhythm.period)
+  const lift = rhythm.still ? 0 : phase > 0.5 ? 1 : 0
+  const dx = rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0
+  const blink = isBlinking(t)
+  const odd = Math.floor(t / 350) % 2 === 1
+
+  const eyes: Eyes =
+    mood === 'happy' || mood === 'loved' ? 'happy'
+    : mood === 'sleepy' ? 'closed'
+    : mood === 'oops' ? 'dizzy'
+    : blink ? 'closed'
+    : mood === 'working' && odd ? 'glance'
+    : 'open'
+  const mouth: Mouth = mood === 'happy' ? 'open' : mood === 'oops' ? 'flat' : mood === 'sleepy' ? 'o' : 'smile'
+
+  const grid: Grid = Array.from({ length: HEIGHT }, () => Array<number | null>(WIDTH).fill(null))
   const ox = 1 + dx
-  const oy = 2 - dy
+  const oy = 1 - lift
   const put = (x: number, y: number, color: number) => {
-    if (x >= 0 && x < SIZE && y >= 0 && y < SIZE) grid[y]![x] = color
+    if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) grid[y]![x] = color
   }
   const paint = { o: edge, b: body, p: BLUSH, k: INK, w: WHITE, r: TONGUE } as const
 
   BODY.forEach((row, y) => [...row].forEach((c, x) => c !== '.' && put(ox + x, oy + y, paint[c as keyof typeof paint])))
-  EYES[eyes].forEach((eye, side) =>
-    [...eye].forEach((c, i) => put(ox + 2 + side * 4 + (i % 2), oy + 3 + Math.floor(i / 2), paint[c as keyof typeof paint])),
-  )
+  for (const col of [2, 5]) EYES[eyes].forEach((c, i) => put(ox + col, oy + 2 + i, paint[c as keyof typeof paint]))
   for (const [x, y, c] of MOUTHS[mouth]) put(ox + x, oy + y, paint[c])
-  if (level >= 10) for (const x of [3, 5, 6]) put(ox + x, oy - 1, SPARK)
-  else if (level >= 5) {
-    put(ox + 5, oy - 1, edge)
-    put(ox + 5, oy - 2, SPARK)
-  }
-  for (const [x, y, color] of extras) put(x, y, color)
+  if (level >= 10) for (const x of [2, 3, 4, 5]) put(ox + x, oy, x === 2 || x === 5 ? GOLD : SPARK) // a crown along the top edge
+
+  if (mood === 'happy') for (const [x, y] of odd ? [[0, 1], [9, 3]] : [[9, 0], [0, 4]]) put(x!, y!, SPARK)
+  if (mood === 'oops') put(9, 2 + (odd ? 1 : 0), SWEAT)
+  if (mood === 'sleepy') put(odd ? 9 : 8, odd ? 0 : 1, ZZZ)
+  if (mood === 'loved') for (const [x, y] of odd ? [[8, 0], [9, 1]] : [[0, 0], [1, 1]]) put(x!, y!, HEART)
   return grid
 }
 
-// Terminal: two pixels per cell with half blocks, encoded as RasterProps.cells wants.
-const DEFAULT = 0x01000000
-export function toCells(grid: Grid): string {
-  const rows = SIZE / 2
-  const view = new DataView(new ArrayBuffer(SIZE * rows * 12))
-  let at = 0
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < SIZE; x++) {
-      const top = grid[y * 2]![x] ?? null
-      const bottom = grid[y * 2 + 1]![x] ?? null
-      const [glyph, fg, bg] =
-        top === null && bottom === null ? [0x20, DEFAULT, DEFAULT]
-        : top === null ? [0x2584, bottom!, DEFAULT]
-        : [0x2580, top, bottom ?? DEFAULT]
-      for (const word of [glyph, fg, bg]) {
-        view.setUint32(at, word, true)
-        at += 4
-      }
-    }
-  }
-  return toBase64(new Uint8Array(view.buffer))
+export function mix(a: number, b: number, t: number): number {
+  const ch = (shift: number) => Math.round(((a >> shift) & 255) * (1 - t) + ((b >> shift) & 255) * t)
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0)
 }
 
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-export function toBase64(bytes: Uint8Array): string {
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const n = (bytes[i]! << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
-    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]!
-    out += i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '='
-    out += i + 2 < bytes.length ? B64[n & 63]! : '='
-  }
-  return out
+// A crossfade between two poses: colors blend, and a pixel that appears or vanishes swaps halfway.
+export function blend(from: Grid, to: Grid, t: number): Grid {
+  return to.map((row, y) => row.map((c, x) => {
+    const a = from[y]?.[x] ?? null
+    if (a === null || c === null) return t < 0.5 ? a : c
+    return mix(a, c, t)
+  }))
 }
 
-// Desktop: the same pixels as SVG, two frames swapped by SMIL so it animates without redraws.
+export type Run = { text: string; fg?: string; bg?: string }
 const hex = (color: number) => `#${color.toString(16).padStart(6, '0')}`
-export function toSvg(frames: Grid[], scale = 6): string {
-  const groups = frames.map((grid, i) => {
-    const rects = grid.flatMap((row, y) =>
-      row.map((c, x) => (c === null ? '' : `<rect x="${x * scale}" y="${y * scale}" width="${scale}" height="${scale}" fill="${hex(c)}"/>`)),
-    ).join('')
-    const values = frames.map((_, j) => (j === i ? 1 : 0)).join(';')
-    return `<g opacity="${i === 0 ? 1 : 0}"><animate attributeName="opacity" values="${values}" dur="${frames.length * 0.45}s" calcMode="discrete" repeatCount="indefinite"/>${rects}</g>`
-  })
-  const side = SIZE * scale
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${side}" height="${side}" viewBox="0 0 ${side} ${side}" shape-rendering="crispEdges">${groups.join('')}</svg>`
+
+// Two pixels per cell with half blocks; empty pixels draw nothing, so the surface shows through.
+export function toRuns(grid: Grid): Run[][] {
+  const rows: Run[][] = []
+  for (let y = 0; y < HEIGHT; y += 2) {
+    const runs: Run[] = []
+    for (let x = 0; x < WIDTH; x++) {
+      const top = grid[y]![x] ?? null
+      const bottom = grid[y + 1]?.[x] ?? null
+      const cell: Run =
+        top === null && bottom === null ? { text: ' ' }
+        : top === null ? { text: '▄', fg: hex(bottom!) }
+        : bottom === null ? { text: '▀', fg: hex(top) }
+        : top === bottom ? { text: '█', fg: hex(top) }
+        : { text: '▀', fg: hex(top), bg: hex(bottom) }
+      const last = runs[runs.length - 1]
+      if (last && last.fg === cell.fg && last.bg === cell.bg) last.text += cell.text
+      else runs.push(cell)
+    }
+    rows.push(runs)
+  }
+  return rows
 }

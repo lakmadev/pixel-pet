@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Mood, PetView } from '../types'
-import { formFor, levelFor, sprite, toCells, toSvg, xpFor } from './sprite'
+import type { PetViewProps } from './pet-view'
+import { formFor, levelFor, xpFor } from './sprite'
 
 type Pet = { name: string; xp: number; born: number; turns: number; pets: number }
 
@@ -17,7 +18,6 @@ const LINES: Record<Mood, string[]> = {
 
 const pick = (list: readonly string[]) => list[Math.floor(Math.random() * list.length)]!
 const SLEEP_AFTER_MS = 5 * 60_000
-const TICK_MS = 450
 
 export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
   const level = levelFor(pet.xp)
@@ -31,15 +31,13 @@ export function xpBar(view: Pick<PetView, 'xp' | 'levelXp' | 'nextXp'>, width = 
 
 const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
 
-// Module state: what the animation timer reads between renders. Rebuilt from the store on reload.
+// Module state between hooks; the pet's record is rebuilt from the store on reload.
 let pet: Pet = { name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }
 let mood: Mood = 'idle'
 let moodUntil = 0
 let isWorking = false
 let lastActive = 0
 let contextPercent = 0
-let frame = 0
-let bandId: string | undefined
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
@@ -68,12 +66,12 @@ async function gainXp($: EngineInterface, amount: number, sound: boolean) {
   await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
 }
 
-async function tick($: EngineInterface) {
-  frame += 1
+// A passing mood (happy, oops, loved) wears off; a long idle drifts into sleep. The motion itself
+// runs in pet-view.tsx on the surface's clock.
+async function checkMood($: EngineInterface) {
   const now = await $.clock.now()
   if (moodUntil && now > moodUntil) await setMood($, baseMood(now))
   else if (mood === 'idle' && baseMood(now) === 'sleepy') await setMood($, 'sleepy')
-  if (bandId) await $.ui.blit({ requestId: bandId, key: 'pet', cells: toCells(sprite(mood, frame, levelFor(pet.xp))) }).catch(() => undefined)
 }
 
 export const register: Register = (on, options) => {
@@ -87,7 +85,7 @@ export const register: Register = (on, options) => {
     if (!saved) await $.store.set('pet', pet)
     lastActive = now
     await update($, view, current => viewOf(pet, 'idle', saved ? pick(LINES.idle) : 'just hatched! say hi 👋', current.isHidden))
-    $.clock.every(TICK_MS, () => void tick($).catch(() => undefined))
+    $.clock.every(1000, () => void checkMood($).catch(() => undefined))
     return next(e)
   })
 
@@ -148,55 +146,45 @@ export const register: Register = (on, options) => {
         `${pet.name} · level ${level} ${formFor(level).name}`,
         `XP ${xpBar({ xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1) })} ${pet.xp}/${xpFor(level + 1)}`,
         `${pet.turns} turns together · petted ${pet.pets} times · ${days} days old`,
-        level < 5 ? 'Grows an antenna at level 5, wears a crown at level 10.' : level < 10 ? 'Wears a crown at level 10.' : 'Fully evolved. Legendary.',
+        level < 10 ? `Next form at level ${[3, 6, 10].find(l => l > level)}; a crown at level 10.` : 'Fully evolved. Legendary.',
       ].join('\n'),
     }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, view)
-    if (e.props.hasSurvey || current.isHidden) return next(e)
+    if (e.props.hasSurvey || current.isHidden || e.props.maxRows < 4) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    // Choose by surface: every table lists Raster, but only the terminal draws it.
-    bandId = e.surface === 'terminal' ? e.requestId : undefined
 
     const onPet = async () => {
       pet = { ...pet, pets: pet.pets + 1 }
       await setMood($, 'loved', 4000)
       await gainXp($, 1, sound)
     }
-    const info = (
+    // One sentence and one quiet line: "Bit is typing furiously…", then its level and the pet button.
+    const words = (
       <Box flexDirection="column" justifyContent="center">
-        <Text>
-          <Text bold>{current.name}</Text>
-          <Text dimColor> · Lv {current.level} {current.form}</Text>
+        <Text wrap="truncate">
+          <Text bold color="claude">{current.name}</Text>
+          <Text> {current.line}</Text>
         </Text>
-        <Text italic>{current.line}</Text>
-        <Text dimColor>XP {xpBar(current)} {current.xp}/{current.nextXp}</Text>
         <Box gap={1}>
-          <Button key="pet" label="Pet ♥" hotkey="p" onPress={onPet} />
-          <Button key="hide" label="Hide" hotkey="h" onPress={() => update($, view, v => ({ ...v, isHidden: true }))} />
+          <Text dimColor>lv {current.level} {current.form}</Text>
+          <Button key="pet" label="♥ pet" plain dimColor hotkey="p" onPress={onPet} />
         </Box>
       </Box>
     )
 
-    if (e.surface === 'terminal') {
-      const { Raster } = $.ui.resolve(e)
-      if (e.props.maxRows < 6) return next(e)
+    if (e.surface === 'terminal' || e.surface === 'desktop') {
+      const { Client } = $.ui.resolve(e)
+      const props: PetViewProps = { mood: current.mood, level: current.level }
       return (
-        <Box gap={2}>
-          <Raster key="pet" columns={12} rows={6} cells={toCells(sprite(current.mood, frame, current.level))} />
-          {info}
+        <Box gap={2} alignItems="center">
+          <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={props} />
+          {words}
         </Box>
       )
     }
-    const { Svg } = $.ui.resolve(e)
-    const svg = toSvg([sprite(current.mood, 1, current.level), sprite(current.mood, 2, current.level)])
-    return (
-      <Box gap={2} alignItems="center">
-        <Svg source={svg} alt={`${current.name} the pixel pet, ${current.mood}`} width={72} height={72} isInteractive />
-        {info}
-      </Box>
-    )
+    return words
   })
 }
