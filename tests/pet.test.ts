@@ -1,11 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barRuns, details, gradientAt, meterSvg } from '../hooks/meter'
-import { previewFor, reactionTo } from '../hooks/register'
+import { barRuns, gradientAt, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
+import { actionLine, lineSvg, LINE_COLORS } from '../hooks/status'
+import { previewFor, reactionTo, sourceOf } from '../hooks/register'
 import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, paletteFor, petSvg, sprite, toRuns } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked'] as const
-const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 41 }] }
+const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85 }, { kind: 'seven_day', percentUsed: 40 }] }
 
 test('28 colours by name, aliases, teal by default', () => {
   expect(COLOR_NAMES).toHaveLength(28)
@@ -46,8 +47,6 @@ test('the desktop pet SVG animates, fades between colours, and rests still witho
 test('the meter: gradient, numbers, a precise bar, and a pill that glides and shimmers', () => {
   expect(gradientAt(0)).toBe(0x34d399)
   expect(gradientAt(1)).toBe(0xf87171)
-  expect(details({ tokens: 124_000, window: 200_000, usd: 1.84, limit: 41 })).toBe('124k/200k · $1.84 · 5h 41%')
-  expect(details({})).toBe('')
   const bar = barRuns(50, 14)
   expect(bar.map(r => r.text).join('')).toBe('━━━━━━━───────')
   expect(barRuns(54, 14).map(r => r.text).join('')).toBe('━━━━━━━╸──────')
@@ -72,11 +71,13 @@ test('the band: pet and live meter in the terminal; SVGs and a click layer on de
       expect(drawn).toContain('meter-view.tsx')
       const meter = JSON.stringify(await ui.drawn({ in: 'meter' }))
       expect(meter).toContain('━')
-      expect(meter).toContain('124k/200k · $1.84 · 5h 41%')
+      expect(meter).toContain('Claude plan')
+      expect(meter).toContain('▰▰▰▰▱')
     } else {
       expect(drawn).toContain('hit.tsx')
-      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(2)
-      expect(drawn).toContain('124k/200k · $1.84 · 5h 41%')
+      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(3)
+      expect(drawn).toContain('Claude plan')
+      expect(drawn).not.toContain('billed')
     }
     await ui.unmount()
   }
@@ -153,4 +154,49 @@ test('/pet color picks and lists, and the band follows', async ($, on) => {
   expect(JSON.stringify(await ui.drawn())).toContain('f9a8d4')
   expect((await run('color rainbow')).text).toContain('Colours: teal, red')
   expect((await run('')).text).toContain('Click it to pet it')
+})
+
+const NOW = Date.parse('2026-10-09T12:00:00Z')
+
+test('usage windows read plainly: gauge, percent, reset, and who bills', () => {
+  expect(resetIn('2026-10-09T13:52:00Z', NOW)).toBe('1h52m')
+  expect(resetIn('2026-10-09T12:38:00Z', NOW)).toBe('38m')
+  expect(resetIn('2026-10-12T16:00:00Z', NOW)).toBe('3d4h')
+  expect(resetIn('2026-10-09T11:00:00Z', NOW)).toBeUndefined()
+  const plan = segmentsText(segments({ tokens: 124_000, window: 200_000, usd: 1.84, source: 'plan', limits: [{ kind: 'five_hour', percent: 85, resetsAt: '2026-10-09T13:52:00Z' }, { kind: 'seven_day', percent: 40 }] }, NOW))
+  expect(plan).toBe('5h ▰▰▰▰▱ 85% ↻1h52m · week ▰▰▱▱▱ 40% · Claude plan')
+  expect(segmentsText(segments({ tokens: 9000, window: 200_000, usd: 0.42, source: 'api' }, NOW))).toBe('9k/200k · $0.42 billed · API')
+  expect(segmentsText(segments({ usd: 3, source: 'bedrock' }, NOW))).toBe('$3.00 billed · Bedrock')
+})
+
+test('the billing source: plan windows, a gateway limit, else the API or provider once a reply is in', () => {
+  const ctx = { percent: 10, window: 200_000 }
+  expect(sourceOf({ context: ctx, rateLimits: [{ kind: 'five_hour', percentUsed: 3 }] }, 'api')).toBe('plan')
+  expect(sourceOf({ context: ctx, rateLimits: [{ kind: 'spend_limit', percentUsed: 3 }] }, 'api')).toBe('gateway')
+  expect(sourceOf({ context: ctx, rateLimits: [] }, 'bedrock')).toBe('bedrock')
+  expect(sourceOf({ context: { window: 200_000 }, rateLimits: [] }, 'api')).toBeUndefined()
+})
+
+test('a line for each kind of action', () => {
+  expect(actionLine('Read', { file_path: '/r/src/auth.ts' })).toBe('is reading auth.ts…')
+  expect(actionLine('Edit', { file_path: '/r/a.ts' })).toBe('is editing a.ts ✏️')
+  expect(actionLine('Bash', { command: 'npm test -- --watch=false' })).toBe('is running the tests 🧪')
+  expect(actionLine('Bash', { command: 'git commit -m "x"' })).toBe('is committing the work ✍️')
+  expect(actionLine('Bash', { command: 'pnpm add zod' })).toBe('is installing packages 📦')
+  expect(actionLine('Bash', { command: 'ls -la' })).toBe('is looking around the repo 👀')
+  expect(actionLine('Bash', { command: 'python3 scripts/seed.py' })).toBe('is running `python3`…')
+  expect(actionLine('Grep', { pattern: 'TODO' })).toBe('is searching for "TODO" 🔍')
+  expect(actionLine('WebFetch', { url: 'https://docs.anthropic.com/x' })).toBe('is reading docs.anthropic.com 🌐')
+  expect(actionLine('mcp__github__create_issue', {})).toBe('is asking github…')
+  expect(actionLine('TodoWrite', {})).toBe('is planning the next steps 📝')
+  expect(actionLine('SomethingElse', {})).toBeUndefined()
+})
+
+test('the desktop line slides: the new one rises, the old one drifts up and fades', () => {
+  const svg = lineSvg('Reaper', 'is running the tests 🧪', 'is reading auth.ts…', LINE_COLORS.dark)
+  expect(svg).toContain('values="32;15"')
+  expect(svg).toContain('values="15;-4"')
+  expect(svg).toContain('#d97757')
+  expect(lineSvg('Reaper', 'is vibing', undefined, LINE_COLORS.light)).not.toContain('<animate')
+  expect(lineSvg('A<b>', 'x & y', undefined, LINE_COLORS.dark)).toContain('A&lt;b&gt;')
 })

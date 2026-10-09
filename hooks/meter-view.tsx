@@ -3,8 +3,9 @@
 import type { ClientModule } from 'claude-code'
 
 import { barRuns, gradientAt, hex } from './meter'
+import type { Segment } from './meter'
 
-export type MeterViewProps = { percent?: number; details: string; isWorking: boolean; width: number }
+export type MeterViewProps = { percent?: number; segments: Segment[]; isWorking: boolean; width: number }
 
 type Ref = { shown: number; target: number; phase: number; isWorking: boolean }
 type State = { ref: Ref }
@@ -36,7 +37,8 @@ const MeterView: ClientModule<MeterViewProps, State> = (props, surface) => {
     <Box>
       {barRuns(ref.shown, props.width, shine).map(run => <Text color={run.fg}>{run.text}</Text>)}
       <Text bold color={hex(gradientAt(ref.shown / 100))}> {Math.round(ref.shown)}%</Text>
-      {props.details && <Text dimColor> {props.details}</Text>}
+      {props.segments.length > 0 && <Text> </Text>}
+      {props.segments.map(seg => <Text color={seg.color} dimColor={seg.dim} bold={seg.bold}>{seg.text}</Text>)}
     </Box>
   )
 }

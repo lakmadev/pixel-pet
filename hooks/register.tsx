@@ -2,10 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { ContextMeter, Mood, PetView } from '../types'
-import { details, gradientAt, hex, meterSvg } from './meter'
+import { gradientAt, hex, meterSvg, segments } from './meter'
+import type { Source } from './meter'
 import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
 import { COLOR_NAMES, COLORS, DEFAULT_COLOR, colorName, petSvg } from './sprite'
+import { LINE_COLORS, actionLine, lineSvg, lineWidth } from './status'
+import type { StatusViewProps } from './status-view'
 
 // `xp` is a leftover field from when the pet had levels; old records keep it, nothing reads it.
 type Pet = { name: string; born: number; turns: number; pets: number; color?: string; xp?: number }
@@ -50,6 +53,17 @@ let lastLine = ''
 let shown: { mood: Mood; color: string } | undefined
 let fadeFrom: { mood: Mood; color: string; at: number } | undefined
 let drawnPercent = 0
+let shownLine: string | undefined
+let slideFrom: { line: string; at: number } | undefined
+// The desktop draws its line as SVG text, which can't follow the theme by itself.
+let theme: 'dark' | 'light' = 'dark'
+// Who bills the tokens when no plan limits come back: the API, or a cloud provider.
+let provider: Source = 'api'
+// A line stays up at least this long, so a burst of tool calls reads as a story, not a flicker.
+const HOLD_MS = 900
+let lineShownAt = 0
+let pendingLine: string | undefined
+let isLineQueued = false
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
@@ -61,19 +75,59 @@ async function setMood($: EngineInterface, next: Mood, forMs = 0) {
   moodUntil = forMs ? now + forMs : 0
   if (next === mood && !forMs) return
   mood = next
-  const line = next === 'idle' && (meter.percent ?? 0) >= 80 ? `is stuffed with tokens (${meter.percent}% context)` : pick(LINES[next])
+  lineShownAt = now
+  const line = next === 'working' ? 'is thinking… 💭' : next === 'idle' && (meter.percent ?? 0) >= 80 ? `is stuffed with tokens (${meter.percent}% context)` : pick(LINES[next])
   await update($, view, current => viewOf(pet, next, line, current.isHidden))
 }
 
-async function setMeter($: EngineInterface, reading: { context: { percent?: number; tokens?: number; window: number }; cost?: { usd: number }; rateLimits: { kind: string; percentUsed: number }[] }) {
-  meter = {
-    percent: reading.context.percent ?? meter.percent,
-    tokens: reading.context.tokens ?? meter.tokens,
-    window: reading.context.window || meter.window,
-    usd: reading.cost?.usd ?? meter.usd,
-    limit: reading.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed ?? meter.limit,
-  }
+type Reading = { context: { percent?: number; tokens?: number; window: number }; cost?: { usd: number }; rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] }
+
+// Plan windows (5-hour, weekly) only come back on a Claude subscription; a gateway reports a spend
+// limit; with neither, once a reply has come back, the tokens are billed by the API or the provider.
+export function sourceOf(reading: Reading, fallback: Source): Source | undefined {
+  if (reading.rateLimits.some(r => r.kind === 'five_hour' || r.kind.startsWith('seven_day'))) return 'plan'
+  if (reading.rateLimits.some(r => r.kind === 'spend_limit')) return 'gateway'
+  return reading.context.percent !== undefined ? fallback : undefined
+}
+
+async function setMeter($: EngineInterface, reading: Reading) {
+  const limits = reading.rateLimits.map(r => (r.resetsAt ? { kind: r.kind, percent: r.percentUsed, resetsAt: r.resetsAt } : { kind: r.kind, percent: r.percentUsed }))
+  const source = sourceOf(reading, provider) ?? meter.source
+  const next: ContextMeter = {}
+  const percent = reading.context.percent ?? meter.percent
+  const tokens = reading.context.tokens ?? meter.tokens
+  const usd = reading.cost?.usd ?? meter.usd
+  if (percent !== undefined) next.percent = percent
+  if (tokens !== undefined) next.tokens = tokens
+  if (reading.context.window || meter.window) next.window = reading.context.window || meter.window!
+  if (usd !== undefined) next.usd = usd
+  if (limits.length || meter.limits) next.limits = limits.length ? limits : meter.limits!
+  if (source) next.source = source
+  meter = next
   await update($, view, current => ({ ...current, meter }))
+}
+
+// Show a working line, holding the current one for HOLD_MS first; only the latest waiting line
+// is kept, so a burst of calls skips straight to what's happening now.
+async function say($: EngineInterface, line: string) {
+  const now = await $.clock.now()
+  const wait = HOLD_MS - (now - lineShownAt)
+  if (wait > 0) {
+    pendingLine = line
+    if (!isLineQueued) {
+      isLineQueued = true
+      $.clock.after(wait, () => {
+        isLineQueued = false
+        const queued = pendingLine
+        pendingLine = undefined
+        if (queued && isWorking) say($, queued).catch(() => undefined)
+      })
+    }
+    return
+  }
+  lineShownAt = now
+  lastLine = line
+  await update($, view, current => (current.line === line ? current : { ...current, line }))
 }
 
 // React first, save after: the blush shouldn't wait on a disk write.
@@ -154,6 +208,12 @@ export const register: Register = (on, options) => {
     pet = saved ?? { name: String(options.name ?? 'Bit'), born: now, turns: 0, pets: 0 }
     if (!saved) await $.store.set('pet', pet)
     lastActive = now
+    // Which provider bills the tokens, from the switches Claude Code reads (never a key).
+    if (await $.env.get('CLAUDE_CODE_USE_BEDROCK').catch(() => undefined)) provider = 'bedrock'
+    else if (await $.env.get('CLAUDE_CODE_USE_VERTEX').catch(() => undefined)) provider = 'vertex'
+    else if (await $.env.get('CLAUDE_CODE_USE_FOUNDRY').catch(() => undefined)) provider = 'foundry'
+    const themeRow = (await $.config.list().catch(() => [])).find(row => row.key === 'theme')
+    theme = /light/i.test(String(themeRow?.value ?? '')) ? 'light' : 'dark'
     const usage = await $.session.usage().catch(() => undefined)
     if (usage) await setMeter($, usage)
     await update($, view, current => viewOf(pet, 'idle', saved ? pick(LINES.idle) : 'just hatched! say hi 👋', current.isHidden))
@@ -202,6 +262,22 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A sentence for each kind of action as it starts; the pet keeps its working mood.
+  on('agent.spawn', async ($, e, next) => {
+    if (!e.parentAgentId) say($, `sent ${e.subagentType.split(':').pop()} off on a side quest 🧭`).catch(() => undefined)
+    return next(e)
+  })
+
+  on('session.compact', async ($, e, next) => {
+    say($, 'is tidying its memory 🧹').catch(() => undefined)
+    return next(e)
+  })
+
+  on('classic.Notification', async ($, e, next) => {
+    if (/permission/i.test(e.notification_type)) say($, 'is waiting for your OK ✋').catch(() => undefined)
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) return done
@@ -218,6 +294,10 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    if (e.agentId === undefined && isWorking) {
+      const line = actionLine(String(e.tool), e as unknown as Record<string, unknown>)
+      if (line) say($, line).catch(() => undefined)
+    }
     const ran = await next(e)
     if (ran.deny === undefined && ran.isError === true && e.agentId === undefined) await setMood($, 'oops', 5000)
     return ran
@@ -267,35 +347,33 @@ export const register: Register = (on, options) => {
     const current = await read($, view)
     if (e.props.hasSurvey || current.isHidden || e.props.maxRows < 4) return next(e)
     const { Box, Text } = $.ui.resolve(e)
+    const now = await $.clock.now()
     const percent = current.meter.percent
-    const line = (
-      <Text wrap="truncate">
-        <Text bold color="claude">{current.name}</Text>
-        <Text> {current.line}</Text>
-      </Text>
-    )
+    const parts = segments(current.meter, now)
 
-    // The terminal draws pixels as half-block text on its grid and animates the meter there too;
-    // anywhere else text doesn't line up into pixels, so pet and meter are SVGs with motion built in.
+    // The terminal draws pixels as half-block text on its grid and animates the line and the meter
+    // there too; anywhere else text doesn't line up into pixels, so pet, line and meter are SVGs
+    // with their motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
       const pet: PetViewProps = { mood: current.mood, look, color: current.color }
-      // Props carry no undefined: before the first reading, percent is left out.
-      const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), details: details(current.meter), isWorking, width: METER_CELLS }
+      const status: StatusViewProps = { name: current.name, line: current.line }
+      const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), segments: parts, isWorking, width: METER_CELLS }
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
           <Box flexDirection="column" justifyContent="center">
-            {line}
+            <Client key="status" module="./status-view.tsx" props={status} />
             <Client key="meter" module="./meter-view.tsx" props={gauge} />
           </Box>
         </Box>
       )
     }
 
-    const now = await $.clock.now()
     if (shown && (shown.mood !== current.mood || shown.color !== current.color)) fadeFrom = { ...shown, at: now }
     shown = { mood: current.mood, color: current.color }
+    if (shownLine !== undefined && shownLine !== current.line) slideFrom = { line: shownLine, at: now }
+    shownLine = current.line
     const from = drawnPercent
     if (percent !== undefined) drawnPercent = percent
     const { Svg } = $.ui.resolve(e)
@@ -309,6 +387,7 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
+    const previous = slideFrom && now - slideFrom.at < 600 ? slideFrom.line : undefined
     return (
       <Box gap={2} alignItems="center">
         <Box>
@@ -316,14 +395,16 @@ export const register: Register = (on, options) => {
           {hit}
         </Box>
         <Box flexDirection="column" justifyContent="center">
-          {line}
+          <Svg source={lineSvg(current.name, current.line, previous, LINE_COLORS[theme])} alt={`${current.name} ${current.line}`} width={lineWidth(current.name, current.line, previous)} height={20} />
           {percent === undefined ? (
             <Text dimColor>context · waiting for the first reply</Text>
           ) : (
             <Box gap={1} alignItems="center">
               <Svg source={meterSvg(percent, from, isWorking)} alt={`Context ${percent}% full`} width={116} height={12} />
               <Text bold color={hex(gradientAt(percent / 100))}>{percent}%</Text>
-              <Text dimColor>{details(current.meter)}</Text>
+              <Text>
+                {parts.map(seg => <Text color={seg.color} dimColor={seg.dim} bold={seg.bold}>{seg.text}</Text>)}
+              </Text>
             </Box>
           )}
         </Box>

@@ -7,9 +7,11 @@ A tiny animated pixel pet above your Claude Code prompt that reacts to your sess
 ![nine moods, 28 colours](docs/pixel-pet.png)
 
 - **Lives above your prompt**, four rows tall, with no box around it. It bobs while Claude works, bounces with sparkles when a turn finishes, sweats when a command fails, and dozes when you're away.
+- **Narrates what Claude is doing**: "is reading auth.ts…", "is running the tests 🧪", "is committing the work ✍️", "is installing packages 📦", "is searching the web for …", "sent Explore off on a side quest 🧭", "is waiting for your OK ✋", "is tidying its memory 🧹" and more. Each line stays up for at least a second. On desktop the new line slides up into place as the old one drifts away; in the terminal, where text moves only by whole rows, it fades through.
 - **Click it to pet it.** It blushes and shows hearts.
 - **Watches you type.** Its eyes follow your caret across the line as if reading along ("is reading your code…" when it looks like code). A backspace makes it wince; deleting a big chunk makes it gasp with a "!". A huge paste gets a "whoa", and saying please or thanks makes it blush.
-- **Context meter** on its second line: a gradient bar (mint → amber → red) for how full the context window is. It glides to each new reading, and a highlight sweeps along it while Claude works. Beside it: tokens, session cost and your 5-hour limit.
+- **Context meter** on its second line: a gradient bar (mint → amber → red) for how full the context window is. It glides to each new reading, and a highlight sweeps along it while Claude works.
+- **Usage limits, plainly.** On a Claude plan you see both windows with gauges and reset timers (`5h ▰▰▰▰▱ 85% ↻1h52m · week ▰▰▱▱▱ 40% ↻3d4h · Claude plan`). On the API or Bedrock/Vertex/Foundry you see what you're actually billed (`$0.42 billed · API`).
 - **28 colours.** `/pet color pink` changes it. As you type the name it tries each colour on, and the names show up as suggestions.
 - Smooth everywhere. In the terminal, the pet and the meter animate on the terminal's own frame clock. In the desktop app they're transparent SVGs with the motion built in. Moods and colours fade into each other instead of popping.
 

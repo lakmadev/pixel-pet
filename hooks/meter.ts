@@ -2,7 +2,12 @@
 // cost, and the 5-hour limit. A gradient runs mint → amber → red along the bar, so the colour at
 // the tip says how worried to be.
 
-export type Meter = { percent?: number; tokens?: number; window?: number; usd?: number; limit?: number }
+export type Limit = { kind: string; percent: number; resetsAt?: string }
+// Where the numbers come from: a Claude plan meters usage in 5-hour and weekly windows and bills
+// nothing per token; the API and the cloud providers bill per token and have no windows.
+export type Source = 'plan' | 'api' | 'bedrock' | 'vertex' | 'foundry' | 'gateway'
+export type Meter = { percent?: number; tokens?: number; window?: number; usd?: number; limits?: Limit[]; source?: Source }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean }
 export type Run = { text: string; fg: string; bold?: boolean }
 
 const STOPS: [at: number, color: number][] = [[0, 0x34d399], [0.6, 0xfbbf24], [1, 0xf87171]]
@@ -26,14 +31,53 @@ export function gradientAt(t: number): number {
 
 const kilo = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 
-// "124k/200k · $1.84 · 5h 41%": whatever the session has reported so far.
-export function details(m: Meter): string {
-  const parts: string[] = []
-  if (m.tokens !== undefined && m.window) parts.push(`${kilo(m.tokens)}/${kilo(m.window)}`)
-  if (m.usd !== undefined) parts.push(`$${m.usd.toFixed(2)}`)
-  if (m.limit !== undefined) parts.push(`5h ${Math.round(m.limit)}%`)
-  return parts.join(' · ')
+const LIMIT_LABELS: Record<string, string> = { five_hour: '5h', seven_day: 'week', seven_day_opus: 'week·opus', spend_limit: 'spend' }
+export const SOURCE_LABELS: Record<Source, string> = { plan: 'Claude plan', api: 'API', bedrock: 'Bedrock', vertex: 'Vertex AI', foundry: 'Foundry', gateway: 'gateway' }
+
+// "1h52m", "38m", "3d4h": how long until a window resets.
+export function resetIn(resetsAt: string | undefined, now: number): string | undefined {
+  if (!resetsAt) return undefined
+  const ms = Date.parse(resetsAt) - now
+  if (!(ms > 0)) return undefined
+  const m = Math.round(ms / 60_000)
+  if (m < 60) return `${m}m`
+  if (m < 24 * 60) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+  const h = Math.round(m / 60)
+  return `${Math.floor(h / 24)}d${h % 24 ? `${h % 24}h` : ''}`
 }
+
+export const miniGauge = (percent: number, width = 5) => {
+  const filled = Math.max(percent > 0 ? 1 : 0, Math.min(width, Math.round((percent / 100) * width)))
+  return '▰'.repeat(filled) + '▱'.repeat(width - filled)
+}
+
+// The line after the context bar: tokens, each usage window with a gauge and its reset, then
+// where it's billed. On a plan the $ is only what the session would cost at API prices, so it's
+// left out here; on the API or a cloud provider it's what you're actually billed.
+export function segments(m: Meter, now: number): Segment[] {
+  const out: Segment[] = []
+  const sep = () => out.length && out.push({ text: ' · ', dim: true })
+  // With usage windows to show, the context % already says enough; the token count makes room.
+  if (m.tokens !== undefined && m.window && !m.limits?.length) out.push({ text: `${kilo(m.tokens)}/${kilo(m.window)}`, dim: true })
+  for (const limit of m.limits ?? []) {
+    sep()
+    const color = hex(gradientAt(limit.percent / 100))
+    out.push({ text: `${LIMIT_LABELS[limit.kind] ?? limit.kind} `, dim: true }, { text: miniGauge(limit.percent), color }, { text: ` ${Math.round(limit.percent)}%`, color, bold: true })
+    const reset = resetIn(limit.resetsAt, now)
+    if (reset) out.push({ text: ` ↻${reset}`, dim: true })
+  }
+  if (m.source && m.source !== 'plan' && m.usd !== undefined) {
+    sep()
+    out.push({ text: `$${m.usd.toFixed(2)} billed`, bold: true })
+  }
+  if (m.source) {
+    sep()
+    out.push({ text: SOURCE_LABELS[m.source], dim: true })
+  }
+  return out
+}
+
+export const segmentsText = (parts: readonly Segment[]) => parts.map(p => p.text).join('')
 
 // The terminal bar: heavy line cells in the gradient, a half cell for precision, a dim track after.
 // `shine` is the cell a highlight sweeps across while Claude works.
