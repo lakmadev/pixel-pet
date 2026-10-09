@@ -1,0 +1,15 @@
+{
+  "name": "pixel-pet",
+  "description": "An animated pixel-art companion above your prompt that reacts to your session and levels up as you code.",
+  "owner": {
+    "name": "lakmadev",
+    "url": "https://github.com/lakmadev"
+  },
+  "plugins": [
+    {
+      "name": "pixel-pet",
+      "source": "./",
+      "description": "An animated pixel-art companion above your prompt that reacts to your session and levels up as you code."
+    }
+  ]
+}

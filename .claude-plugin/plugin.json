@@ -1,0 +1,11 @@
+{
+  "name": "pixel-pet",
+  "version": "0.1.0",
+  "description": "An animated pixel-art companion above your prompt that reacts to your session and levels up as you code.",
+  "author": { "name": "lakmadev", "url": "https://github.com/lakmadev" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "name": { "type": "string", "title": "Pet name", "description": "What your pet is called (change any time with /pet rename).", "default": "Bit" },
+    "sound": { "type": "boolean", "title": "Level-up sound", "description": "Play a short jingle when your pet levels up (macOS).", "default": true }
+  }
+}
