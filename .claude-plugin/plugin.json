@@ -17,38 +17,8 @@
     "color": {
       "type": "string",
       "title": "Pet colour",
-      "description": "Its colour (also /pet color <name>).",
-      "default": "teal",
-      "options": [
-        "teal",
-        "red",
-        "orange",
-        "yellow",
-        "green",
-        "blue",
-        "purple",
-        "pink",
-        "white",
-        "gray",
-        "black",
-        "brown",
-        "cyan",
-        "mint",
-        "lime",
-        "sky",
-        "navy",
-        "indigo",
-        "violet",
-        "lavender",
-        "magenta",
-        "rose",
-        "peach",
-        "coral",
-        "gold",
-        "lava",
-        "ghost",
-        "midnight"
-      ]
+      "description": "Its colour: teal, red, orange, yellow, green, blue, purple, pink, white, gray, black, brown, cyan, mint, lime, sky, navy, indigo, violet, lavender, magenta, rose, peach, coral, gold, lava, ghost or midnight (also /pet color <name>).",
+      "default": "teal"
     }
   }
 }
