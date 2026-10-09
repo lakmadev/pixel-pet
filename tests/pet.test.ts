@@ -2,10 +2,11 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { TONES, barRuns, cardLines, gradientAt, limitsSvg, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
 import { actionLine, lineSvg, LINE_COLORS } from '../hooks/status'
+import { ARRIVE_MS, LEAVE_MS, MINI_H, MINI_W, WAVE_MS, colorFromDefinition, miniColor, miniDraw, miniFrame, minisSvg } from '../hooks/mini'
 import { previewFor, reactionTo, sourceOf } from '../hooks/register'
 import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, paletteFor, petSvg, sprite, toRuns } from '../hooks/sprite'
 
-const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked'] as const
+const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked', 'dozing', 'waking'] as const
 const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85, resetsAt: new Date(Date.now() + 2 * 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 40 }] }
 
 test('28 colours by name, aliases, teal by default', () => {
@@ -41,7 +42,12 @@ test('the desktop pet SVG animates, fades between colours, and rests still witho
   expect(svg).toContain('<animateTransform')
   expect(svg).toContain('values="1;0" dur="350ms"')
   expect(svg.match(/<g opacity="0">/g)!.length).toBeGreaterThanOrEqual(3)
-  expect(petSvg('sleepy')).not.toContain('animateTransform')
+  // Asleep it breathes, z's drift up and fade, and a snore bubble swells and pops.
+  const sleeping = petSvg('sleepy')
+  expect(sleeping.match(/repeatCount="indefinite"/g)!.length).toBeGreaterThanOrEqual(7)
+  expect(sleeping).toContain('<circle')
+  expect(petSvg('dozing')).toContain('fill="freeze"')
+  expect(petSvg('waking')).toContain('keyTimes="0;0.6;1"')
 })
 
 test('the meter: gradient, numbers, a precise bar, and a pill that glides and shimmers', () => {
@@ -219,4 +225,63 @@ test('the desktop line slides: the new one rises, the old one drifts up and fade
   expect(svg).toContain('#d97757')
   expect(lineSvg('Reaper', 'is vibing', undefined, LINE_COLORS.light)).not.toContain('<animate')
   expect(lineSvg('A<b>', 'x & y', undefined, LINE_COLORS.dark)).toContain('A&lt;b&gt;')
+})
+
+test('the helpers: half size, their own colour, a pop in and a wave bye', () => {
+  const body = miniDraw('pink')
+  expect(body).toHaveLength(MINI_H)
+  for (const row of body) expect(row).toHaveLength(MINI_W)
+  expect(colorFromDefinition('---\nname: reviewer\ncolor: blue\n---\nYou review.')).toBe('blue')
+  expect(colorFromDefinition('---\nname: x\n---')).toBeUndefined()
+  expect(miniColor('agent-1', 'teal')).not.toBe('teal')
+  expect(miniColor('agent-1', 'teal')).toBe(miniColor('agent-1', 'teal'))
+  // In: a sparkle, then the body. Out: waving (the arm flips), a blink, a speck, gone.
+  expect(JSON.stringify(miniFrame('pink', 'here', 50, 0))).toContain(String(0xffe066))
+  expect(miniFrame('pink', 'here', ARRIVE_MS + 10, 0)).toEqual(miniDraw('pink'))
+  expect(JSON.stringify(miniFrame('pink', 'bye', 0, 0))).not.toBe(JSON.stringify(miniFrame('pink', 'bye', 230, 0)))
+  expect(miniFrame('pink', 'bye', WAVE_MS + 700, 0)).toBeNull()
+  expect(LEAVE_MS).toBeGreaterThan(WAVE_MS + 550)
+  const svg = minisSvg([{ id: 'a', color: 'pink', state: 'here', age: 0 }, { id: 'b', color: 'sky', state: 'here', age: 5000 }, { id: 'c', color: 'lime', state: 'bye', age: 100 }]).svg
+  expect(svg.match(/type="scale"/g)).toHaveLength(1)
+  expect(svg).toContain('values="1;0" dur="800ms"')
+})
+
+test('a new session starts asleep; typing wakes it slowly, then it reads along', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined as never }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('prompt.edit', ($, e) => ({ text: e.text, cursor: e.cursor }))
+  await $.session.start({ cwd: '/r', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12 } as never })
+  expect(JSON.stringify(await ui.drawn())).toMatch(/asleep|snoring|dreams|napping|fell asleep/)
+  // The kit raises prompt.edit through $.prompt; the public typings don't list it.
+  const edit = ($.prompt as unknown as { edit: (e: object) => Promise<unknown> }).edit
+  const type = (text: string) => edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText: 'a', key: { key: 'a' } })
+  await type('h')
+  await clock.advance(50)
+  expect(JSON.stringify(await ui.drawn())).toMatch(/waking up|stretches|rubs its eyes/)
+  await clock.advance(2000)
+  await type('he')
+  await clock.advance(50)
+  expect(JSON.stringify(await ui.drawn())).not.toMatch(/waking up|stretches|rubs its eyes/)
+})
+
+test('a subagent hatches a helper; when it finishes the helper waves bye and leaves', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined as never }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/r' }))
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', () => ({ agentId: 'ag-1', model: 'x' }) as never)
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/r', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn({ subagentType: 'Explore', prompt: 'p', description: 'd', tool_use_id: 'tu-1' } as never)
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 12 } as never })
+  expect(JSON.stringify(await ui.drawn())).toContain('Explore helper')
+  await $.turn.complete({ answer: 'found it', durationMs: 900, isAborted: false, turnId: 't', reason: 'answer', agentId: 'ag-1' })
+  expect(JSON.stringify(await ui.drawn())).toContain('Explore helper waving bye')
+  await clock.advance(LEAVE_MS + 1500)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('helper')
 })

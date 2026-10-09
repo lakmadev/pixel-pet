@@ -96,6 +96,8 @@ const RHYTHM: Record<Mood, { period: number; shake?: boolean; still?: boolean }>
   happy: { period: 480 },
   oops: { period: 260, shake: true },
   sleepy: { period: 3600, still: true },
+  dozing: { period: 3000, still: true },
+  waking: { period: 520 },
   loved: { period: 900 },
 }
 
@@ -105,21 +107,24 @@ const wave = (t: number, period: number) => 0.5 - 0.5 * Math.cos((2 * Math.PI * 
 export const isBlinking = (t: number) => (t % 3700) < 140 || ((t + 1300) % 6100) < 120
 
 // look: where the eyes point, -1 left, 0 ahead, 1 right (reading along as you type).
-type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; color?: string; withBody?: boolean; withExtras?: boolean }
+// t: the clock, for extras that drift (a sleeper's z's).
+type Pose = { lift?: number; dx?: number; blink?: boolean; odd?: boolean; look?: number; color?: string; t?: number; withBody?: boolean; withExtras?: boolean }
 
 // One still frame. The terminal animates by drawing many of these; the desktop SVG layers a few.
-export function draw(mood: Mood, { lift = 0, dx = 0, blink = false, odd = false, look = 0, color = DEFAULT_COLOR, withBody = true, withExtras = true }: Pose = {}): Grid {
+export function draw(mood: Mood, { lift = 0, dx = 0, blink = false, odd = false, look = 0, color = DEFAULT_COLOR, t = 0, withBody = true, withExtras = true }: Pose = {}): Grid {
   const { body, edge } = paletteFor(color)
   const eyes: Eyes =
     mood === 'happy' || mood === 'loved' ? 'happy'
     : mood === 'sleepy' ? 'closed'
+    : mood === 'dozing' ? (blink ? 'open' : 'closed') // heavy lids: only now and then do they open
+    : mood === 'waking' ? (blink ? 'closed' : 'open') // quick bleary blinks
     : mood === 'oops' ? 'dizzy'
     : mood === 'wince' ? 'closed'
     : mood === 'shocked' ? 'wide'
     : blink ? 'closed'
     : mood === 'working' && odd ? 'glance'
     : 'open'
-  const mouth: Mouth = mood === 'happy' ? 'open' : mood === 'oops' || mood === 'wince' ? 'flat' : mood === 'sleepy' ? 'o' : mood === 'shocked' ? 'gasp' : 'smile'
+  const mouth: Mouth = mood === 'happy' ? 'open' : mood === 'oops' || mood === 'wince' ? 'flat' : mood === 'sleepy' ? 'o' : mood === 'shocked' || mood === 'dozing' || mood === 'waking' ? 'gasp' : 'smile'
 
   const grid: Grid = Array.from({ length: HEIGHT }, () => Array<number | null>(WIDTH).fill(null))
   const ox = 1 + dx
@@ -138,7 +143,15 @@ export function draw(mood: Mood, { lift = 0, dx = 0, blink = false, odd = false,
   if (withExtras) {
     if (mood === 'happy') for (const [x, y] of odd ? [[0, 1], [9, 3]] : [[9, 0], [0, 4]]) put(x!, y!, SPARK)
     if (mood === 'oops') put(9, 2 + (odd ? 1 : 0), SWEAT)
-    if (mood === 'sleepy') put(odd ? 9 : 8, odd ? 0 : 1, ZZZ)
+    if (mood === 'sleepy') {
+      // Two z's drifting up and away, half a cycle apart, and a snore bubble on the breath.
+      const path = [[7, 4], [8, 3], [8, 2], [9, 1], [9, 0]]
+      for (const offset of [0, 2]) {
+        const [x, y] = path[(Math.floor(t / 420) + offset) % path.length]!
+        put(x!, y!, ZZZ)
+      }
+      if (Math.floor(t / 1800) % 2 === 0) put(9, 4, SWEAT) // the snore bubble, beside the cheek
+    }
     if (mood === 'loved') for (const [x, y] of odd ? [[8, 0], [9, 1]] : [[0, 0], [1, 1]]) put(x!, y!, HEART)
     if (mood === 'shocked') for (const y of [0, 1, 3]) put(9, y, odd ? SPARK : 0xff6b6b) // a blinking "!"
     if (mood === 'wince') put(odd ? 9 : 8, 2, SWEAT)
@@ -150,13 +163,15 @@ export function draw(mood: Mood, { lift = 0, dx = 0, blink = false, odd = false,
 export function sprite(mood: Mood, t: number, look = 0, color = DEFAULT_COLOR): Grid {
   const rhythm = RHYTHM[mood]
   const phase = wave(t, rhythm.period)
+  const lids = mood === 'dozing' ? (t % 1800) < 420 : mood === 'waking' ? (t % 520) < 140 : isBlinking(t)
   return draw(mood, {
     lift: rhythm.still || rhythm.shake ? 0 : phase > 0.5 ? 1 : 0,
     dx: rhythm.shake ? (phase > 0.5 ? 1 : -1) : 0,
-    blink: isBlinking(t),
+    blink: lids,
     odd: Math.floor(t / 350) % 2 === 1,
     look,
     color,
+    t,
   })
 }
 
@@ -178,11 +193,13 @@ export type Run = { text: string; fg?: string; bg?: string }
 export const hex = (color: number) => `#${color.toString(16).padStart(6, '0')}`
 
 // Two pixels per cell with half blocks; empty pixels draw nothing, so the surface shows through.
-export function toRuns(grid: Grid): Run[][] {
+export const toRuns = (grid: Grid) => toRunsOf(grid, WIDTH)
+
+export function toRunsOf(grid: Grid, width: number): Run[][] {
   const rows: Run[][] = []
-  for (let y = 0; y < HEIGHT; y += 2) {
+  for (let y = 0; y < grid.length; y += 2) {
     const runs: Run[] = []
-    for (let x = 0; x < WIDTH; x++) {
+    for (let x = 0; x < width; x++) {
       const top = grid[y]![x] ?? null
       const bottom = grid[y + 1]?.[x] ?? null
       const cell: Run =
@@ -219,22 +236,43 @@ export function petSvg(mood: Mood, from?: { mood: Mood; color: string }, look = 
       return out
     }).join('')
   const ease = 'calcMode="spline" keyTimes="0;0.5;1" keySplines="0.45 0 0.55 1;0.45 0 0.55 1"'
+  const once = (ms: number, spline = '0.2 0.8 0.2 1') => `dur="${ms}ms" calcMode="spline" keyTimes="0;1" keySplines="${spline}" fill="freeze"`
   const rhythm = RHYTHM[mood]
-  const motion = rhythm.still ? ''
+  // How the body moves: a bob or a shake on the mood's rhythm; asleep, a slow breath that swells it
+  // a touch; dozing off, a slow sink; waking, a rise from that sink with a little overshoot.
+  const motion =
+    mood === 'sleepy' ? `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 0.35};0 0" dur="3600ms" ${ease} repeatCount="indefinite"/>`
+    : mood === 'dozing' ? `<animateTransform attributeName="transform" type="translate" from="0 0" to="0 ${px * 0.6}" ${once(2600, '0.4 0 0.6 1')}/>`
+    : mood === 'waking' ? `<animateTransform attributeName="transform" type="translate" values="0 ${px * 0.6};0 ${-px * 0.5};0 0" keyTimes="0;0.6;1" dur="1100ms" calcMode="spline" keySplines="0.2 0.8 0.3 1;0.4 0 0.6 1" fill="freeze"/>`
     : rhythm.shake ? `<animateTransform attributeName="transform" type="translate" values="${-px * 0.6} 0;${px * 0.6} 0;${-px * 0.6} 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
-    : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
+    : `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * (mood === 'idle' || mood === 'reading' ? 0.6 : 1)};0 0" dur="${rhythm.period}ms" ${ease} repeatCount="indefinite"/>`
   const toggle = (dur: number, on: string) => `<animate attributeName="opacity" values="0;1" keyTimes="0;${on}" calcMode="discrete" dur="${dur}ms" repeatCount="indefinite"/>`
 
   const base = draw(mood, { withExtras: false, look, color })
-  const blink = mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, { blink: true, withExtras: false, look, color }), base)}${toggle(3700, '0.962')}</g>` : ''
+  // Lids: a blink now and then; dozing, heavy lids that open less and less; waking, quick bleary blinks.
+  const lids =
+    mood === 'idle' || mood === 'working' || mood === 'reading' ? `<g opacity="0">${rects(draw(mood, { blink: true, withExtras: false, look, color }), base)}${toggle(3700, '0.962')}</g>`
+    : mood === 'dozing' ? `<g opacity="0">${rects(draw(mood, { blink: true, withExtras: false, color }), base)}<animate attributeName="opacity" values="0;1;0;1;0" keyTimes="0;0.1;0.35;0.45;1" calcMode="discrete" dur="2600ms" fill="freeze"/></g>`
+    : mood === 'waking' ? `<g opacity="0">${rects(draw(mood, { blink: true, withExtras: false, color }), base)}<animate attributeName="opacity" values="1;0;1;0" keyTimes="0;0.25;0.4;0.6" calcMode="discrete" dur="1100ms" fill="freeze"/></g>`
+    : ''
   const glance = mood === 'working' ? `<g opacity="0">${rects(draw(mood, { odd: true, withExtras: false, color }), base)}${toggle(700, '0.5')}</g>` : ''
-  const extrasA = rects(draw(mood, { withBody: false }))
-  const extrasB = rects(draw(mood, { withBody: false, odd: true }))
+
+  // Asleep: z's that drift up and fade, one after another, and a snore bubble that swells and pops.
+  const z = (begin: number) =>
+    `<g opacity="0"><rect x="${px * 7.6}" y="${px * 3.6}" width="${px * 0.9}" height="${px * 0.9}" fill="#cfd8ff"/>`
+    + `<animateTransform attributeName="transform" type="translate" values="0 0;${px * 1.2} ${-px * 3.4}" dur="2400ms" begin="${begin}ms" repeatCount="indefinite"/>`
+    + `<animate attributeName="opacity" values="0;0.95;0" keyTimes="0;0.25;1" dur="2400ms" begin="${begin}ms" repeatCount="indefinite"/></g>`
+  const snore = mood === 'sleepy'
+    ? z(0) + z(800) + z(1600)
+      + `<circle shape-rendering="geometricPrecision" cx="${px * 6.9}" cy="${px * 6.2}" r="0" fill="#7fdbff" fill-opacity="0.55" stroke="#bfefff" stroke-opacity="0.8" stroke-width="0.6"><animate attributeName="r" values="0;${px * 0.9};${px * 1.25};0;0" keyTimes="0;0.55;0.7;0.72;1" dur="3600ms" repeatCount="indefinite"/></circle>`
+    : ''
+  const extrasA = mood === 'sleepy' ? '' : rects(draw(mood, { withBody: false }))
+  const extrasB = mood === 'sleepy' ? '' : rects(draw(mood, { withBody: false, odd: true }))
   const twinkle = extrasA || extrasB
     ? `<g>${extrasA}<animate attributeName="opacity" values="1;0" keyTimes="0;0.5" calcMode="discrete" dur="700ms" repeatCount="indefinite"/></g><g opacity="0">${extrasB}${toggle(700, '0.5')}</g>`
     : ''
   const fade = from && (from.mood !== mood || from.color !== color)
     ? `<g opacity="0">${rects(draw(from.mood, { color: from.color }))}<animate attributeName="opacity" values="1;0" dur="350ms" fill="freeze"/></g>`
     : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * px}" height="${HEIGHT * px}" viewBox="0 0 ${WIDTH * px} ${HEIGHT * px}" shape-rendering="crispEdges"><g>${rects(base)}${blink}${glance}${motion}</g>${twinkle}${fade}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * px}" height="${HEIGHT * px}" viewBox="0 0 ${WIDTH * px} ${HEIGHT * px}" shape-rendering="crispEdges"><g>${rects(base)}${lids}${glance}${motion}</g>${twinkle}${snore}${fade}</svg>`
 }

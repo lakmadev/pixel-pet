@@ -1,13 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { ContextMeter, Mood, PetView } from '../types'
+import type { ContextMeter, Mini, Mood, PetView } from '../types'
 import { TONES, cardLines, gradientAt, hex, limitsSvg, meterSvg, segments } from './meter'
 import type { Source } from './meter'
 import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
 import { COLOR_NAMES, COLORS, DEFAULT_COLOR, colorName, petSvg } from './sprite'
 import { LINE_COLORS, actionLine, lineSvg, lineWidth } from './status'
+import { LEAVE_MS, colorFromDefinition, miniColor, minisSvg } from './mini'
+import type { MinisViewProps } from './minis-view'
 import type { StatusViewProps } from './status-view'
 
 // `xp` is a leftover field from when the pet had levels; old records keep it, nothing reads it.
@@ -18,7 +20,9 @@ const LINES: Record<Mood, string[]> = {
   working: ['is typing furiously…', 'is reading your code…', 'is thinking very hard…', 'is chasing a bug…', 'is consulting the docs…'],
   happy: ['did a happy dance!', 'is proud of you!', 'says: ship it!', 'high-fives the terminal!'],
   oops: ["saw an error. it's fine. everything's fine.", 'is sweating nervously', "says: that wasn't supposed to happen"],
-  sleepy: ['is asleep. zzz', 'dreams of green tests', 'is napping on your keyboard'],
+  sleepy: ['is fast asleep… zzz', 'is snoring softly', 'dreams of green tests', 'is napping on your keyboard'],
+  dozing: ['is getting sleepy…', 'yawns…', 'is fighting to stay awake'],
+  waking: ['is waking up… ☀️', 'stretches and yawns', 'rubs its eyes'],
   loved: ['loves you back ♥', 'purrs in binary', 'is blushing in pixels'],
   reading: ['is reading along…', 'is peeking at what you type 👀', 'is following every keystroke', 'is taking notes'],
   wince: ['winces at the typo', 'pretends not to see that', 'says: backspace, backspace'],
@@ -33,16 +37,20 @@ const METER_CELLS = 14
 let defaultColor = DEFAULT_COLOR
 let previewColor: string | undefined
 let meter: ContextMeter = {}
+// The helpers on screen, one per running subagent, and which agent each stands for.
+let minis: Mini[] = []
+const miniOf = new Map<string, string>()
 
 export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
-  return { mood, line, name: pet.name, color: previewColor ?? colorName(pet.color) ?? defaultColor, isHidden, meter }
+  return { mood, line, name: pet.name, color: previewColor ?? colorName(pet.color) ?? defaultColor, isHidden, meter, minis }
 }
 
-const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
+const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', born: 0, turns: 0, pets: 0 }, 'sleepy', 'is fast asleep… zzz', false))
 
 // Module state between hooks; the pet's record is rebuilt from the store on reload.
 let pet: Pet = { name: 'Bit', born: 0, turns: 0, pets: 0 }
-let mood: Mood = 'idle'
+// A new session finds the pet asleep; the first keystroke wakes it.
+let mood: Mood = 'sleepy'
 let moodUntil = 0
 let isWorking = false
 let lastActive = 0
@@ -180,6 +188,9 @@ export function reactionTo(e: { text: string; cursor: number; start: number; end
 async function react($: EngineInterface, reaction: NonNullable<ReturnType<typeof reactionTo>>) {
   const now = await $.clock.now()
   lastActive = now
+  // Asleep or nodding off, the first keys wake it gently; reactions resume once it's up.
+  if (mood === 'sleepy' || mood === 'dozing') return wake($)
+  if (mood === 'waking' && now < moodUntil) return
   moodUntil = now + 2000
   const isSame = mood === reaction.mood && look === reaction.look && (reaction.line === undefined || reaction.line === lastLine)
   look = reaction.look
@@ -190,12 +201,72 @@ async function react($: EngineInterface, reaction: NonNullable<ReturnType<typeof
   await update($, view, current => viewOf(pet, reaction.mood, lastLine, current.isHidden))
 }
 
-// A passing mood (happy, oops, loved) wears off; a long idle drifts into sleep. The motion itself
-// runs on the surface's clock (pet-view.tsx) or in the SVG.
+const WAKE_MS = 1600
+const DOZE_MS = 2800
+
+// Blinks, a yawn and a little rise, then on with whatever comes next.
+async function wake($: EngineInterface) {
+  if (mood === 'waking') return
+  await setMood($, 'waking', WAKE_MS)
+}
+
+// A passing mood (happy, oops, loved, waking) wears off; a long quiet nods off into sleep, through a
+// few heavy-lidded seconds of dozing. The motion itself runs on the surface's clock or in the SVG.
 async function checkMood($: EngineInterface) {
   const now = await $.clock.now()
-  if (moodUntil && now > moodUntil) await setMood($, baseMood(now))
-  else if (mood === 'idle' && baseMood(now) === 'sleepy') await setMood($, 'sleepy')
+  if (moodUntil && now > moodUntil) {
+    const next = baseMood(now)
+    // Drifting off from an awake mood goes through dozing first.
+    if (next === 'sleepy' && mood !== 'dozing') await setMood($, 'dozing', DOZE_MS)
+    else await setMood($, next)
+  } else if (mood === 'idle' && baseMood(now) === 'sleepy') await setMood($, 'dozing', DOZE_MS)
+  await tendMinis($, now)
+}
+
+// Helpers whose agents have finished wave bye; ones that have waved long enough leave.
+async function tendMinis($: EngineInterface, now: number) {
+  if (minis.length === 0) return
+  const here = minis.filter(m => m.state === 'here' && now - m.at > 3000)
+  if (here.length) {
+    const agents = await $.agent.list().catch(() => [])
+    const finished = new Set(agents.filter(a => ['completed', 'failed', 'killed'].includes(a.status)).map(a => a.id))
+    for (const [agentId, miniId] of miniOf) if (finished.has(agentId)) await sayBye($, miniId)
+  }
+  const kept = minis.filter(m => m.state === 'here' || now - m.at < LEAVE_MS)
+  if (kept.length !== minis.length) {
+    minis = kept
+    await update($, view, current => ({ ...current, minis }))
+  }
+}
+
+async function hatch($: EngineInterface, id: string, type: string) {
+  const name = type.split(':').pop() ?? type
+  const color = (await definedColor($, name)) ?? miniColor(id, colorName(pet.color) ?? defaultColor)
+  minis = [...minis.filter(m => m.id !== id), { id, name, color, state: 'here' as const, at: await $.clock.now() }].slice(-6)
+  await update($, view, current => ({ ...current, minis }))
+}
+
+async function sayBye($: EngineInterface, id: string) {
+  const mini = minis.find(m => m.id === id)
+  if (!mini || mini.state === 'bye') return
+  const now = await $.clock.now()
+  minis = minis.map(m => (m.id === id ? { ...m, state: 'bye' as const, at: now } : m))
+  await update($, view, current => ({ ...current, minis }))
+  if (isWorking) say($, `${mini.name} is back with answers 👋`).catch(() => undefined)
+}
+
+// A custom agent may name its colour in its definition (`color: blue`): the project's, then the person's.
+async function definedColor($: EngineInterface, name: string): Promise<string | undefined> {
+  if (!/^[\w-]+$/.test(name)) return undefined
+  const home = await $.env.get('HOME').catch(() => undefined)
+  const cwd = await $.session.cwd().catch(() => undefined)
+  for (const dir of [cwd && `${cwd}/.claude/agents`, home && `${home}/.claude/agents`]) {
+    if (!dir) continue
+    const text = await $.fs.read(`${dir}/${name}.md`).catch(() => undefined)
+    const color = text ? colorFromDefinition(text) : undefined
+    if (color) return color
+  }
+  return undefined
 }
 
 export const register: Register = (on, options) => {
@@ -216,7 +287,8 @@ export const register: Register = (on, options) => {
     theme = /light/i.test(String(themeRow?.value ?? '')) ? 'light' : 'dark'
     const usage = await $.session.usage().catch(() => undefined)
     if (usage) await setMeter($, usage)
-    await update($, view, current => viewOf(pet, 'idle', saved ? pick(LINES.idle) : 'just hatched! say hi 👋', current.isHidden))
+    mood = 'sleepy'
+    await update($, view, current => viewOf(pet, 'sleepy', saved ? pick(LINES.sleepy) : 'just hatched and fell asleep… type to wake it', current.isHidden))
     $.clock.every(1000, () => void checkMood($).catch(() => undefined))
     return next(e)
   })
@@ -252,20 +324,29 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     lastActive = await $.clock.now()
     look = 0
-    if (mood === 'sleepy' || mood === 'reading' || mood === 'wince' || mood === 'shocked') await setMood($, 'idle')
+    if (mood === 'sleepy' || mood === 'dozing') await wake($)
+    else if (mood === 'reading' || mood === 'wince' || mood === 'shocked') await setMood($, 'idle')
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
     isWorking = true
-    if (!moodUntil) await setMood($, 'working')
+    lastActive = await $.clock.now()
+    // Asleep, it wakes first; once up, the waking mood wears off into working.
+    if (mood === 'sleepy' || mood === 'dozing') await wake($)
+    else if (!moodUntil) await setMood($, 'working')
     return next(e)
   })
 
   // A sentence for each kind of action as it starts; the pet keeps its working mood.
+  // Each subagent hatches a little helper beside the pet, in its own colour; it waves bye when done.
   on('agent.spawn', async ($, e, next) => {
     if (!e.parentAgentId) say($, `sent ${e.subagentType.split(':').pop()} off on a side quest 🧭`).catch(() => undefined)
-    return next(e)
+    await hatch($, e.tool_use_id, e.subagentType).catch(() => undefined)
+    const started = await next(e)
+    if (started.deny !== undefined || !started.agentId) await sayBye($, e.tool_use_id).catch(() => undefined)
+    else miniOf.set(started.agentId, e.tool_use_id)
+    return started
   })
 
   on('session.compact', async ($, e, next) => {
@@ -280,7 +361,11 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    if (e.agentId !== undefined) return done
+    if (e.agentId !== undefined) {
+      const miniId = miniOf.get(e.agentId)
+      if (miniId) await sayBye($, miniId).catch(() => undefined)
+      return done
+    }
     isWorking = false
     lastActive = await $.clock.now()
     if (e.isAborted) {
@@ -350,6 +435,8 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const percent = current.meter.percent
     const parts = segments(current.meter, now)
+    // The helpers' ages at this draw: each one's story (pop in, bob, wave, fade) runs from its age.
+    const helpers = current.minis.map(m => ({ id: m.id, color: m.color, state: m.state, age: Math.max(0, now - m.at) }))
     // Point at the meter for the details the line leaves out: tokens, resets, how you're billed.
     // Hidden until hovered; it opens over the band, which clips it, so it stays within four rows.
     const card = cardLines(current.meter, now)
@@ -371,6 +458,11 @@ export const register: Register = (on, options) => {
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
+          {helpers.length > 0 && (
+            <Box alignSelf="flex-end">
+              <Client key="minis" module="./minis-view.tsx" props={{ minis: helpers, stamp: now } satisfies MinisViewProps} />
+            </Box>
+          )}
           <Box flexDirection="column" justifyContent="center">
             <Client key="status" module="./status-view.tsx" props={status} />
             <Box key="meter-row" alignItems="center">
@@ -401,6 +493,7 @@ export const register: Register = (on, options) => {
       )
     }
     const previous = slideFrom && now - slideFrom.at < 600 ? slideFrom.line : undefined
+    const crew = helpers.length > 0 ? minisSvg(helpers) : undefined
     // Desktop draws the usage windows as SVG pills; a tight window's reset and the API's bill stay text.
     const windows = current.meter.limits ?? []
     const limits = windows.length > 0 ? limitsSvg(windows, TONES[theme]) : undefined
@@ -412,6 +505,11 @@ export const register: Register = (on, options) => {
           <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
           {hit}
         </Box>
+        {crew && (
+          <Box alignSelf="flex-end">
+            <Svg source={crew.svg} alt={current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`).join(', ')} width={crew.width} height={crew.height} />
+          </Box>
+        )}
         <Box flexDirection="column" justifyContent="center">
           <Svg source={lineSvg(current.name, current.line, previous, LINE_COLORS[theme])} alt={`${current.name} ${current.line}`} width={lineWidth(current.name, current.line, previous)} height={20} />
           {percent === undefined ? (

@@ -1,19 +1,21 @@
 # pixel-pet
 
-A tiny animated pixel pet above your Claude Code prompt that reacts to your session and your typing, with a live context meter beside it.
+A tiny animated pixel pet that lives above your Claude Code prompt. It sleeps when things are quiet, narrates what Claude is doing, watches you type, hatches little helpers for subagents, and shows a live context meter beside it.
 
 ![the band in the terminal and the desktop app](docs/pixel-pet-band.png)
 
-![nine moods, 28 colours](docs/pixel-pet.png)
+![moods and 28 colours](docs/pixel-pet.png)
 
-- **Lives above your prompt**, four rows tall, with no box around it. It bobs while Claude works, bounces with sparkles when a turn finishes, sweats when a command fails, and dozes when you're away.
-- **Narrates what Claude is doing**: "is reading auth.ts…", "is running the tests 🧪", "is committing the work ✍️", "is installing packages 📦", "is searching the web for …", "sent Explore off on a side quest 🧭", "is waiting for your OK ✋", "is tidying its memory 🧹" and more. Each line stays up for at least a second. On desktop the new line slides up into place as the old one drifts away; in the terminal, where text moves only by whole rows, it fades through.
-- **Click it to pet it.** It blushes and shows hearts.
-- **Watches you type.** Its eyes follow your caret across the line as if reading along ("is reading your code…" when it looks like code). A backspace makes it wince; deleting a big chunk makes it gasp with a "!". A huge paste gets a "whoa", and saying please or thanks makes it blush.
-- **Context meter** on its second line: a gradient bar (mint → amber → red) for how full the context window is. It glides to each new reading, and a highlight sweeps along it while Claude works.
-- **Usage limits, plainly.** On a Claude plan you see your 5-hour and weekly windows as small pills with percentages; a window's reset time appears once it's past 70%. On the API or Bedrock/Vertex/Foundry you see the dollars actually billed. Point at the meter (ⓘ) for the full card: context tokens, when each window resets, and how you're billed.
+## What it does
+
+- **Sleeps and wakes.** A new session finds it fast asleep: eyes closed, breathing slowly, z's drifting up and a snore bubble that swells and pops. Your first keystroke or message wakes it slowly (blinks, a yawn, a little stretch), then it carries on. After 5 quiet minutes it nods off again through a few heavy-lidded, yawning seconds.
+- **Narrates Claude's work**, one line per action as it starts: "is reading auth.ts…", "is editing app.ts ✏️", "is running the tests 🧪", "is committing the work ✍️", "is installing packages 📦", "is searching the web for …", "is waiting for your OK ✋", "is tidying its memory 🧹" and more. Each line stays up for at least a second. On desktop the new line slides up into place as the old one drifts away; in the terminal, where text moves only by whole rows, it fades through.
+- **Hatches helpers for subagents.** Each subagent Claude starts gets a mini pet beside it, half the size, in the agent's own colour (the `color:` in its definition) or a stable random one. It pops in, bobs while its agent works, then waves bye, floats up and fades when the agent is done.
+- **Watches you type.** Its eyes follow your caret across the line as if reading along ("is reading your code…" when it looks like code). A backspace makes it wince, deleting a big chunk makes it gasp with a "!", a huge paste gets a "whoa", and please or thanks makes it blush.
+- **Click it to pet it.** A heart pops where you click and it blushes.
+- **Context meter** on its second line: a gradient bar (mint → amber → red) that glides to each reading and shimmers while Claude works. After it come your Claude plan's 5-hour and weekly usage as small pills, with a window's reset time once it passes 70%. On the API or Bedrock/Vertex/Foundry it shows the dollars actually billed instead. Point at the meter (ⓘ) for the details: context tokens, when each window resets, and how you're billed.
 - **28 colours.** `/pet color pink` changes it. As you type the name it tries each colour on, and the names show up as suggestions.
-- Smooth everywhere. In the terminal, the pet and the meter animate on the terminal's own frame clock. In the desktop app they're transparent SVGs with the motion built in. Moods and colours fade into each other instead of popping.
+- **Smooth everywhere.** In the terminal the pet, its helpers, the line and the meter animate on the terminal's own frame clock. In the desktop app they're transparent SVGs with the motion built in, gliding between pixels. Moods and colours fade into each other instead of popping.
 
 ## Install
 
@@ -32,6 +34,8 @@ A tiny animated pixel pet above your Claude Code prompt that reacts to your sess
 
 Settings (`/config`): `name`, `color`.
 
-Part of [lakmadev/claude-mods](https://github.com/lakmadev/claude-mods), a pack of eleven Claude Code mods.
+## What it reads
 
-MIT licensed.
+Hook events (tool calls, prompts, turns, subagent starts) and the usage figures Claude Code reports, plus a custom agent's definition file for its colour. It reads the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY` switches to name who bills you, never an API key. Nothing leaves your machine; its name, colour and counts are kept in Claude Code's plugin store.
+
+Part of [lakmadev/claude-mods](https://github.com/lakmadev/claude-mods), a pack of eleven Claude Code mods. MIT licensed.
