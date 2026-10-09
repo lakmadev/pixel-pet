@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { ContextMeter, Mood, PetView } from '../types'
-import { gradientAt, hex, meterSvg, segments } from './meter'
+import { TONES, cardLines, gradientAt, hex, limitsSvg, meterSvg, segments } from './meter'
 import type { Source } from './meter'
 import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
@@ -350,6 +350,15 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const percent = current.meter.percent
     const parts = segments(current.meter, now)
+    // Point at the meter for the details the line leaves out: tokens, resets, how you're billed.
+    // Hidden until hovered; it opens over the band, which clips it, so it stays within four rows.
+    const card = cardLines(current.meter, now)
+    const details = card.length > 0 && (
+      <Box position="absolute" top={-2} left={0} display="none" hover={{ display: 'flex' }} flexDirection="column" paddingX={1} backgroundColor={theme === 'light' ? '#f3f3f5' : '#2b2b30'}>
+        {card.map(text => <Text wrap="truncate">{text}</Text>)}
+      </Box>
+    )
+    const hint = card.length > 0 && <Text dimColor> ⓘ</Text>
 
     // The terminal draws pixels as half-block text on its grid and animates the line and the meter
     // there too; anywhere else text doesn't line up into pixels, so pet, line and meter are SVGs
@@ -364,7 +373,11 @@ export const register: Register = (on, options) => {
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
           <Box flexDirection="column" justifyContent="center">
             <Client key="status" module="./status-view.tsx" props={status} />
-            <Client key="meter" module="./meter-view.tsx" props={gauge} />
+            <Box key="meter-row" alignItems="center">
+              <Client key="meter" module="./meter-view.tsx" props={gauge} />
+              {hint}
+              {details}
+            </Box>
           </Box>
         </Box>
       )
@@ -388,6 +401,11 @@ export const register: Register = (on, options) => {
       )
     }
     const previous = slideFrom && now - slideFrom.at < 600 ? slideFrom.line : undefined
+    // Desktop draws the usage windows as SVG pills; a tight window's reset and the API's bill stay text.
+    const windows = current.meter.limits ?? []
+    const limits = windows.length > 0 ? limitsSvg(windows, TONES[theme]) : undefined
+    const resets = parts.filter(p => p.text.startsWith(' resets')).map(p => p.text.trim()).join(' · ')
+    const bill = parts.find(p => p.text.startsWith('$'))?.text
     return (
       <Box gap={2} alignItems="center">
         <Box>
@@ -399,12 +417,14 @@ export const register: Register = (on, options) => {
           {percent === undefined ? (
             <Text dimColor>context · waiting for the first reply</Text>
           ) : (
-            <Box gap={1} alignItems="center">
+            <Box key="meter-row" gap={1} alignItems="center">
               <Svg source={meterSvg(percent, from, isWorking)} alt={`Context ${percent}% full`} width={116} height={12} />
               <Text bold color={hex(gradientAt(percent / 100))}>{percent}%</Text>
-              <Text>
-                {parts.map(seg => <Text color={seg.color} dimColor={seg.dim} bold={seg.bold}>{seg.text}</Text>)}
-              </Text>
+              {limits && <Svg source={limits.svg} alt={card.slice(1).join('; ')} width={limits.width} height={16} />}
+              {resets && <Text dimColor>{resets}</Text>}
+              {bill && <Text bold>{bill}</Text>}
+              {hint}
+              {details}
             </Box>
           )}
         </Box>

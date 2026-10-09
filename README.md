@@ -11,7 +11,7 @@ A tiny animated pixel pet above your Claude Code prompt that reacts to your sess
 - **Click it to pet it.** It blushes and shows hearts.
 - **Watches you type.** Its eyes follow your caret across the line as if reading along ("is reading your code…" when it looks like code). A backspace makes it wince; deleting a big chunk makes it gasp with a "!". A huge paste gets a "whoa", and saying please or thanks makes it blush.
 - **Context meter** on its second line: a gradient bar (mint → amber → red) for how full the context window is. It glides to each new reading, and a highlight sweeps along it while Claude works.
-- **Usage limits, plainly.** On a Claude plan you see both windows with gauges and reset timers (`5h ▰▰▰▰▱ 85% ↻1h52m · week ▰▰▱▱▱ 40% ↻3d4h · Claude plan`). On the API or Bedrock/Vertex/Foundry you see what you're actually billed (`$0.42 billed · API`).
+- **Usage limits, plainly.** On a Claude plan you see your 5-hour and weekly windows as small pills with percentages; a window's reset time appears once it's past 70%. On the API or Bedrock/Vertex/Foundry you see the dollars actually billed. Point at the meter (ⓘ) for the full card: context tokens, when each window resets, and how you're billed.
 - **28 colours.** `/pet color pink` changes it. As you type the name it tries each colour on, and the names show up as suggestions.
 - Smooth everywhere. In the terminal, the pet and the meter animate on the terminal's own frame clock. In the desktop app they're transparent SVGs with the motion built in. Moods and colours fade into each other instead of popping.
 

@@ -1,12 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barRuns, gradientAt, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
+import { TONES, barRuns, cardLines, gradientAt, limitsSvg, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
 import { actionLine, lineSvg, LINE_COLORS } from '../hooks/status'
 import { previewFor, reactionTo, sourceOf } from '../hooks/register'
 import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, paletteFor, petSvg, sprite, toRuns } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked'] as const
-const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85 }, { kind: 'seven_day', percentUsed: 40 }] }
+const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85, resetsAt: new Date(Date.now() + 2 * 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 40 }] }
 
 test('28 colours by name, aliases, teal by default', () => {
   expect(COLOR_NAMES).toHaveLength(28)
@@ -71,12 +71,16 @@ test('the band: pet and live meter in the terminal; SVGs and a click layer on de
       expect(drawn).toContain('meter-view.tsx')
       const meter = JSON.stringify(await ui.drawn({ in: 'meter' }))
       expect(meter).toContain('━')
-      expect(meter).toContain('Claude plan')
       expect(meter).toContain('▰▰▰▰▱')
+      expect(meter).not.toContain('Claude plan')
+      expect(drawn).toContain('Billing: Claude plan')
+      expect(drawn).toContain('"hover":{"display":"flex"}')
     } else {
       expect(drawn).toContain('hit.tsx')
-      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(3)
-      expect(drawn).toContain('Claude plan')
+      expect(drawn.match(/"type":"Svg"/g)).toHaveLength(4)
+      expect(drawn).not.toContain('↻')
+      expect(drawn).toContain('Billing: Claude plan')
+      expect(drawn).toContain('resets ')
       expect(drawn).not.toContain('billed')
     }
     await ui.unmount()
@@ -164,9 +168,25 @@ test('usage windows read plainly: gauge, percent, reset, and who bills', () => {
   expect(resetIn('2026-10-12T16:00:00Z', NOW)).toBe('3d4h')
   expect(resetIn('2026-10-09T11:00:00Z', NOW)).toBeUndefined()
   const plan = segmentsText(segments({ tokens: 124_000, window: 200_000, usd: 1.84, source: 'plan', limits: [{ kind: 'five_hour', percent: 85, resetsAt: '2026-10-09T13:52:00Z' }, { kind: 'seven_day', percent: 40 }] }, NOW))
-  expect(plan).toBe('5h ▰▰▰▰▱ 85% ↻1h52m · week ▰▰▱▱▱ 40% · Claude plan')
-  expect(segmentsText(segments({ tokens: 9000, window: 200_000, usd: 0.42, source: 'api' }, NOW))).toBe('9k/200k · $0.42 billed · API')
-  expect(segmentsText(segments({ usd: 3, source: 'bedrock' }, NOW))).toBe('$3.00 billed · Bedrock')
+  // A reset shows on the line only once a window is past 70%; the plan's $ estimate stays in the card.
+  expect(plan).toBe('5h ▰▰▰▰▱ 85% resets 1h52m  week ▰▰▱▱▱ 40%')
+  expect(segmentsText(segments({ tokens: 9000, window: 200_000, usd: 0.42, source: 'api' }, NOW))).toBe('9k/200k  $0.42')
+  expect(segmentsText(segments({ usd: 3, source: 'bedrock' }, NOW))).toBe('$3.00')
+})
+
+test('the hover card says it plainly; desktop pills line up as SVG', () => {
+  const card = cardLines({ percent: 62, tokens: 124_000, window: 200_000, usd: 1.84, source: 'plan', limits: [{ kind: 'five_hour', percent: 4, resetsAt: '2026-10-09T16:51:00Z' }, { kind: 'seven_day', percent: 1 }] }, NOW)
+  expect(card).toEqual([
+    'Context 62% full · 124k of 200k tokens',
+    '5-hour limit 4% used · resets in 4h51m',
+    'Weekly limit 1% used',
+    'Billing: Claude plan, usage limits instead of per-token charges (≈$1.84 at API rates)',
+  ])
+  expect(cardLines({ usd: 0.42, source: 'api' }, NOW)).toEqual(['Billing: API, $0.42 billed this session'])
+  const { svg, width } = limitsSvg([{ kind: 'five_hour', percent: 4 }, { kind: 'seven_day', percent: 1 }], TONES.dark)
+  expect(svg.match(/<rect/g)).toHaveLength(4)
+  expect(svg).toContain('>5h<')
+  expect(width).toBeGreaterThan(100)
 })
 
 test('the billing source: plan windows, a gateway limit, else the API or provider once a reply is in', () => {

@@ -51,30 +51,76 @@ export const miniGauge = (percent: number, width = 5) => {
   return '▰'.repeat(filled) + '▱'.repeat(width - filled)
 }
 
-// The line after the context bar: tokens, each usage window with a gauge and its reset, then
-// where it's billed. On a plan the $ is only what the session would cost at API prices, so it's
-// left out here; on the API or a cloud provider it's what you're actually billed.
+// A window's reset only earns a place on the line once it's getting tight; the card always has it.
+export const RESET_SHOWN_FROM = 70
+
+// The terminal's line after the context bar: tokens (when there are no windows to show), each
+// usage window as a gauge and a percent, and the bill on the API or a cloud provider. On a plan
+// the $ is only what the session would cost at API prices, so it stays in the card.
 export function segments(m: Meter, now: number): Segment[] {
   const out: Segment[] = []
-  const sep = () => out.length && out.push({ text: ' · ', dim: true })
-  // With usage windows to show, the context % already says enough; the token count makes room.
+  const sep = () => out.length && out.push({ text: '  ' })
   if (m.tokens !== undefined && m.window && !m.limits?.length) out.push({ text: `${kilo(m.tokens)}/${kilo(m.window)}`, dim: true })
   for (const limit of m.limits ?? []) {
     sep()
     const color = hex(gradientAt(limit.percent / 100))
     out.push({ text: `${LIMIT_LABELS[limit.kind] ?? limit.kind} `, dim: true }, { text: miniGauge(limit.percent), color }, { text: ` ${Math.round(limit.percent)}%`, color, bold: true })
-    const reset = resetIn(limit.resetsAt, now)
-    if (reset) out.push({ text: ` ↻${reset}`, dim: true })
+    const reset = limit.percent >= RESET_SHOWN_FROM ? resetIn(limit.resetsAt, now) : undefined
+    if (reset) out.push({ text: ` resets ${reset}`, dim: true })
   }
   if (m.source && m.source !== 'plan' && m.usd !== undefined) {
     sep()
-    out.push({ text: `$${m.usd.toFixed(2)} billed`, bold: true })
-  }
-  if (m.source) {
-    sep()
-    out.push({ text: SOURCE_LABELS[m.source], dim: true })
+    out.push({ text: `$${m.usd.toFixed(2)}`, bold: true })
   }
   return out
+}
+
+const LIMIT_NAMES: Record<string, string> = { five_hour: '5-hour limit', seven_day: 'Weekly limit', seven_day_opus: 'Weekly Opus limit', spend_limit: 'Spend limit' }
+
+// The hover card: everything the line leaves out, in plain words.
+export function cardLines(m: Meter, now: number): string[] {
+  const lines: string[] = []
+  if (m.percent !== undefined) lines.push(`Context ${m.percent}% full${m.tokens !== undefined && m.window ? ` · ${kilo(m.tokens)} of ${kilo(m.window)} tokens` : ''}`)
+  for (const limit of m.limits ?? []) {
+    const reset = resetIn(limit.resetsAt, now)
+    lines.push(`${LIMIT_NAMES[limit.kind] ?? limit.kind} ${Math.round(limit.percent)}% used${reset ? ` · resets in ${reset}` : ''}`)
+  }
+  const usd = m.usd !== undefined ? `$${m.usd.toFixed(2)}` : undefined
+  if (m.source === 'plan') lines.push(`Billing: Claude plan, usage limits instead of per-token charges${usd ? ` (≈${usd} at API rates)` : ''}`)
+  else if (m.source) lines.push(`Billing: ${SOURCE_LABELS[m.source]}${usd ? `, ${usd} billed this session` : ''}`)
+  return lines
+}
+
+export type Tones = { label: string }
+export const TONES: Record<'dark' | 'light', Tones> = { dark: { label: '#9a9aa2' }, light: { label: '#6b7280' } }
+
+// Desktop: the usage windows as one SVG, so labels, pills and percents line up exactly
+// (the app's proportional font draws ▰ and ▱ at different widths).
+export function limitsSvg(limits: readonly Limit[], tones: Tones): { svg: string; width: number } {
+  const CHAR = 7.4
+  const PILL = 30
+  let x = 0
+  let end = 0
+  const parts = limits.map(limit => {
+    const label = LIMIT_LABELS[limit.kind] ?? limit.kind
+    const color = hex(gradientAt(limit.percent / 100))
+    const pct = `${Math.round(limit.percent)}%`
+    const fill = Math.max(limit.percent > 0 ? 4 : 0, (Math.min(100, limit.percent) / 100) * PILL)
+    const lx = x
+    const px = lx + label.length * CHAR + 6
+    const tx = px + PILL + 6
+    end = tx + pct.length * 8.4 // bold digits run wider than labels
+    x = end + 16
+    return `<text x="${lx}" y="12" fill="${tones.label}">${label}</text>`
+      + `<rect x="${px}" y="5" width="${PILL}" height="5" rx="2.5" fill="#8b93a7" fill-opacity="0.25"/>`
+      + `<rect x="${px}" y="5" width="${fill.toFixed(1)}" height="5" rx="2.5" fill="${color}"/>`
+      + `<text x="${tx}" y="12" fill="${color}" font-weight="700">${pct}</text>`
+  })
+  const width = Math.ceil(Math.max(1, end + 2))
+  return {
+    width,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="16" viewBox="0 0 ${width} 16" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="12.5">${parts.join('')}</svg>`,
+  }
 }
 
 export const segmentsText = (parts: readonly Segment[]) => parts.map(p => p.text).join('')
