@@ -91,6 +91,15 @@ test('clicking the sprite pets it', async ($, on) => {
   expect(drawn).toMatch(/loves you back|purrs in binary|blushing in pixels/)
 })
 
+test('on desktop a click on the layer over the sprite pets it, a heart at once, an up alone counts', async ($, on) => {
+  mock.store(on)
+  mock.clock(on)
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12 } as never })
+  await ui.pointer({ type: 'up', x: 2, y: 1, button: 'left', in: 'pet-hit' })
+  expect(JSON.stringify(await ui.drawn({ in: 'pet-hit' }))).toContain('♥')
+  expect(JSON.stringify(await ui.drawn())).toMatch(/loves you back|purrs in binary|blushing in pixels/)
+})
+
 const edit = (text: string, start: number, end: number, inputText: string, key: unknown = { key: 'x' }) => ({ text, cursor: start, start, end, inputText, key })
 
 test('reacts to typing, code, small and big deletes, pastes and manners', () => {

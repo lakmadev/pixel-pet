@@ -23,8 +23,12 @@ const PetView: ClientModule<PetViewProps, State> = (props, surface) => {
   }
   if (surface.state === undefined) {
     surface.setState({ ref })
+    // Some clicks arrive as a down, some only as an up: either pets, once per click.
+    let lastPet = -Infinity
     surface.onPointer(event => {
-      if (event.type === 'down') surface.post({ pet: true })
+      if ((event.type !== 'down' && event.type !== 'up') || ref.t - lastPet < 300) return
+      lastPet = ref.t
+      surface.post({ pet: true })
     })
     surface.every(FRAME_MS, () => {
       // Asleep it barely moves, so a quarter of the frames will do.

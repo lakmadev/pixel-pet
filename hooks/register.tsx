@@ -76,10 +76,11 @@ async function setMeter($: EngineInterface, reading: { context: { percent?: numb
   await update($, view, current => ({ ...current, meter }))
 }
 
+// React first, save after: the blush shouldn't wait on a disk write.
 async function petIt($: EngineInterface) {
   pet = { ...pet, pets: pet.pets + 1 }
-  await $.store.set('pet', pet)
   await setMood($, 'loved', 4000)
+  await $.store.set('pet', pet)
 }
 
 const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
@@ -184,9 +185,8 @@ export const register: Register = (on, options) => {
 
   // A click on the sprite (terminal) or on the layer over it (desktop) pets it.
   on('ui.message', async ($, e, next) => {
-    const done = await next(e)
-    if ((e.element === 'pet' || e.element === 'pet-hit') && (e.data as { pet?: boolean } | null)?.pet) await petIt($)
-    return done
+    if ((e.element === 'pet' || e.element === 'pet-hit') && (e.data as { pet?: boolean } | null)?.pet) petIt($).catch(() => undefined)
+    return next(e)
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -305,7 +305,7 @@ export const register: Register = (on, options) => {
       const { Client } = $.ui.resolve(e)
       hit = (
         <Box position="absolute" top={0} left={0}>
-          <Client key="pet-hit" module="./hit.tsx" width={6} height={2} props={{ columns: 6 }} />
+          <Client key="pet-hit" module="./hit.tsx" width={6} height={2} props={{ columns: 6, rows: 2 }} />
         </Box>
       )
     }
