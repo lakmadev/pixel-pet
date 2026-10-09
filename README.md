@@ -19,6 +19,8 @@ A tiny animated pixel pet that lives above your Claude Code prompt. It sleeps wh
 
 ## Install
 
+Requires **Claude Code 2.1.293 or later**: mods are an early-access feature and gain events with each release. Check with `claude --version`; update with `claude update`.
+
 ```
 /plugin marketplace add lakmadev/pixel-pet
 /plugin install pixel-pet@pixel-pet
