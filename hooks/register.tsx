@@ -24,7 +24,7 @@ const SLEEP_AFTER_MS = 5 * 60_000
 
 export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
   const level = levelFor(pet.xp)
-  return { mood, line, name: pet.name, color: pet.color ?? defaultColor, level, xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1), form: formFor(level).name, isHidden }
+  return { mood, line, name: pet.name, color: previewColor ?? pet.color ?? defaultColor, level, xp: pet.xp, levelXp: xpFor(level), nextXp: xpFor(level + 1), form: formFor(level).name, isHidden }
 }
 
 export function xpBar(view: Pick<PetView, 'xp' | 'levelXp' | 'nextXp'>, width = 10): string {
@@ -32,8 +32,9 @@ export function xpBar(view: Pick<PetView, 'xp' | 'levelXp' | 'nextXp'>, width = 
   return '▰'.repeat(filled) + '▱'.repeat(width - filled)
 }
 
-// The configured colour, used until /pet color picks one.
+// The configured colour, used until /pet color picks one; and the one being tried on while typing it.
 let defaultColor = 'auto'
+let previewColor: string | undefined
 
 const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', xp: 0, born: 0, turns: 0, pets: 0 }, 'idle', 'is waiting for you', false))
 
@@ -63,6 +64,31 @@ async function setMood($: EngineInterface, next: Mood, forMs = 0) {
   mood = next
   const line = next === 'idle' && contextPercent >= 80 ? `is stuffed with tokens (${contextPercent}% context)` : pick(LINES[next])
   await update($, view, current => viewOf(pet, next, line, current.isHidden))
+}
+
+const COLOR_NOTES: Record<string, string> = {
+  auto: 'follows its level: teal → purple → coral → gold',
+  teal: 'calm sea-green', purple: 'soft violet', coral: 'warm orange-red', gold: 'shiny and smug',
+  pink: 'bubblegum', mint: 'fresh green', sky: 'clear blue', lava: 'hot red', ghost: 'pale and spooky', midnight: 'dark slate',
+}
+
+const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
+
+// While the draft reads `/pet color <partial>`, the colour to try on: the exact name, else the
+// first that starts with what's typed.
+export function previewFor(draft: string): string | undefined {
+  const partial = COLOR_COMMAND.exec(draft)?.[1]?.toLowerCase()
+  if (!partial) return undefined
+  return COLOR_NAMES.find(name => name === partial) ?? COLOR_NAMES.find(name => name.startsWith(partial))
+}
+
+const afterEdit = (e: { text: string; start: number; end: number; inputText: string }) => e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
+
+async function preview($: EngineInterface, color: string | undefined) {
+  if (color === previewColor) return
+  previewColor = color
+  const line = color ? `is trying on ${color}… press Enter to keep it` : pick(LINES.idle)
+  await update($, view, current => viewOf(pet, current.mood, line, current.isHidden))
 }
 
 const CODEY = /[{}();=<>[\]`]|=>|\b(function|const|def|class|import|return)\b/
@@ -139,9 +165,23 @@ export const register: Register = (on, options) => {
   // Keystrokes in the prompt box: answer at once, react off the typing path.
   on('prompt.edit', async ($, e, next) => {
     const box = await next(e)
-    const reaction = reactionTo(e)
-    if (reaction) react($, reaction).catch(() => undefined)
+    // Typing `/pet color …` tries the colour on; anything else reacts to the typing.
+    const color = previewFor(afterEdit(e))
+    if (color || previewColor) preview($, color).catch(() => undefined)
+    else {
+      const reaction = reactionTo(e)
+      if (reaction) react($, reaction).catch(() => undefined)
+    }
     return box
+  })
+
+  // The colour names as typeahead rows while the colour word is being typed.
+  on('prompt.autocomplete', async ($, e, next) => {
+    const offered = await next(e)
+    if (!COLOR_COMMAND.test(e.text.slice(0, e.cursor))) return offered
+    const partial = e.token.toLowerCase()
+    const rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: COLOR_NOTES[name] }))
+    return { suggestions: [...offered.suggestions, ...rows] }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -191,7 +231,11 @@ export const register: Register = (on, options) => {
     }
     if (verb === 'color' || verb === 'colour') {
       const choice = (rest[0] ?? '').toLowerCase()
-      if (!COLOR_NAMES.includes(choice)) return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
+      if (!COLOR_NAMES.includes(choice)) {
+        await preview($, undefined)
+        return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
+      }
+      previewColor = undefined
       pet = { ...pet, color: choice === 'auto' ? undefined : choice }
       await $.store.set('pet', pet)
       await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))

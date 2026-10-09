@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { reactionTo, xpBar } from '../hooks/register'
+import { previewFor, reactionTo, xpBar } from '../hooks/register'
 import { COLORS, HEIGHT, WIDTH, blend, formFor, levelFor, paletteFor, petSvg, sprite, toRuns, xpFor } from '../hooks/sprite'
 
 const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved'] as const
@@ -111,4 +111,26 @@ test('/pet color picks, lists and resets, and the band follows', async ($, on) =
   expect(JSON.stringify(await ui.drawn())).toContain('f9a8d4')
   expect((await run('color rainbow')).text).toContain('Colours: auto, teal')
   expect((await run('color auto')).text).toContain('follows its level')
+})
+
+test('typing /pet color previews the first matching colour', () => {
+  expect(previewFor('/pet color pi')).toBe('pink')
+  expect(previewFor('/pet colour lava')).toBe('lava')
+  expect(previewFor('/pet color m')).toBe('mint')
+  expect(previewFor('/pet color mid')).toBe('midnight')
+  expect(previewFor('/pet color ')).toBeUndefined()
+  expect(previewFor('/pet color zzz')).toBeUndefined()
+  expect(previewFor('make the pet color pink')).toBeUndefined()
+})
+
+test('the colour names show in the typeahead after /pet color', async ($, on) => {
+  on('prompt.autocomplete', () => ({ suggestions: [] }))
+  // The kit raises prompt.autocomplete through $.prompt; the public typings don't list it.
+  type Autocomplete = (a: { text: string; cursor: number; token: string; start: number }) => Promise<{ suggestions: { text: string; description?: string }[] }>
+  const autocomplete = ($.prompt as unknown as { autocomplete: Autocomplete }).autocomplete
+  const ask = (text: string, token: string) => autocomplete({ text, cursor: text.length, token, start: text.length - token.length })
+  const rows = (await ask('/pet color p', 'p')).suggestions
+  expect(rows.map(r => r.text)).toEqual(['purple', 'pink'])
+  expect(rows[0]!.description).toBe('soft violet')
+  expect((await ask('/pet rename p', 'p')).suggestions).toHaveLength(0)
 })

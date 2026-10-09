@@ -29,7 +29,7 @@ A tiny animated pixel-art companion that lives above your Claude Code prompt and
 | `/pet` | Stats: level, XP, turns together, age |
 | `/pet rename <name>` | Rename it (default: Bit) |
 | `/pet hide` / `/pet show` | Tuck it away or bring it back |
-| `/pet color <name>` | Pick a colour: teal, purple, coral, gold, pink, mint, sky, lava, ghost, midnight; or `auto` to follow its level |
+| `/pet color <name>` | Pick a colour: teal, purple, coral, gold, pink, mint, sky, lava, ghost, midnight; or `auto` to follow its level. It tries each one on as you type the name, and the names show up as suggestions. |
 
 Settings (`/config`): `name`, `color`, `sound`.
 
