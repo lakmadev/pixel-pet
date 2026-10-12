@@ -2,6 +2,8 @@
 
 A tiny animated pixel pet that lives above your Claude Code prompt. It sleeps when things are quiet, narrates what Claude is doing, watches you type, hatches little helpers for subagents, and shows a live context meter beside it.
 
+![pixel-pet in action](docs/promo/pixel-pet-promo.gif)
+
 ![the band in the terminal and the desktop app](docs/pixel-pet-band.png)
 
 ![moods and 28 colours](docs/pixel-pet.png)
