@@ -647,6 +647,12 @@ export const register: Register = (on, options) => {
   on('session.compact', async ($, e, next) => {
     say($, 'is tidying its memory 🧹').catch(() => undefined)
     const compacted = await next(e)
+    if (compacted.skip !== undefined) return compacted
+    // The fill comes from a reply, and the compacted window has had none yet: drop the old number
+    // rather than keep showing the pre-compact one.
+    const { percent: _p, tokens: _t, ...rest } = meter
+    meter = rest
+    await update($, view, current => ({ ...current, meter }))
     await announce($, 'waking', 'stretches · feels light again ✨', 'good', WAKE_MS).catch(() => undefined)
     return compacted
   })

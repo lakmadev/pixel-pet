@@ -48,7 +48,7 @@ export function lineTwoSvg(line: LineTwo, previous: Layout | undefined): { svg: 
   let content = ''
   let x = 0
   if (line.percent === undefined) {
-    content = `<text x="0" y="17.5" fill="${line.tones.label}">context · waiting for the first reply</text>`
+    content = `<text x="0" y="17.5" fill="${line.tones.label}">context · updates on the next reply</text>`
     x = 230
   } else {
     const meter = meterParts(line.percent, line.from, line.isWorking, PILL)

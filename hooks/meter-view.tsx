@@ -29,7 +29,7 @@ const MeterView: ClientModule<MeterViewProps, State> = (props, surface) => {
     })
   }
 
-  if (props.percent === undefined) return <Text dimColor>context · waiting for the first reply</Text>
+  if (props.percent === undefined) return <Text dimColor>context · updates on the next reply</Text>
 
   const filled = Math.max(1, Math.round((ref.shown / 100) * props.width))
   const shine = ref.isWorking ? (ref.phase % (filled + 8)) - 4 : undefined

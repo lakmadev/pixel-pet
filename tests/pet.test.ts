@@ -98,6 +98,26 @@ test('the band: pet and live meter in the terminal; SVGs and a click layer on de
   }
 })
 
+test('a compact drops the old context number until the next reply', async ($, on) => {
+  mock.store(on)
+  mock.clock(on)
+  on('session.usage', () => ({ value: USAGE as never }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  const summary = [{ role: 'user', text: 'summary', toolUses: [] }] as never
+  on('session.compact', () => ({ messages: summary }))
+  on('session.measure', ($, e) => ({ changed: e.changed }) as never)
+  await $.session.start({ cwd: '/r', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ ...USAGE, changed: ['context'] } as never)
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12 } as never })
+  expect(JSON.stringify(await ui.drawn({ in: 'meter' }))).toContain('"62"')
+  await $.session.compact({ trigger: 'manual', messages: summary })
+  const after = JSON.stringify(await ui.drawn({ in: 'meter' }))
+  expect(after).not.toContain('"62"')
+  expect(after).toContain('updates on the next reply')
+  await ui.unmount()
+})
+
 test('clicking the sprite pets it', async ($, on) => {
   mock.store(on)
   mock.clock(on)
