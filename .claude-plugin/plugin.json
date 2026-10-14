@@ -1,6 +1,6 @@
 {
   "name": "pixel-pet",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "An animated pixel-art companion above your prompt that reacts to your session and your typing, with a live context meter.",
   "author": {
     "name": "lakmadev",
