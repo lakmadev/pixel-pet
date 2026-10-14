@@ -2,11 +2,11 @@
 
 A tiny animated pixel pet that lives above your Claude Code prompt, in a little pixel world that follows your day. It naps when things are quiet, tells you what Claude is doing without becoming noise, cheers when your tests pass, waves when Claude needs you, and hatches little helpers for subagents, with a live context meter beside it.
 
-![pixel-pet in action](docs/promo/pixel-pet-promo.gif)
+![pixel-pet in action](docs/promo/pixel-pet-0.3.gif)
 
 [▶ Watch the 50-second tour with sound](https://github.com/lakmadev/claude-mods/blob/main/docs/promo/pixel-pet-promo-voiceover.mp4) · [What's new in 0.3](https://github.com/lakmadev/claude-mods/blob/main/docs/promo/pixel-pet-whats-new.mp4)
 
-![the band: the pet in its world, its status line and the context meter](docs/pixel-pet-band.png)
+![the band: the pet in its world, its status line and the context meter](docs/pixel-pet-band-0.3.png)
 
 ## What it does
 
