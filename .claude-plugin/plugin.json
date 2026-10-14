@@ -1,6 +1,6 @@
 {
   "name": "pixel-pet",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "An animated pixel-art companion above your prompt that reacts to your session and your typing, with a live context meter.",
   "author": {
     "name": "lakmadev",
@@ -11,8 +11,8 @@
     "name": {
       "type": "string",
       "title": "Pet name",
-      "description": "What your pet is called (change any time with /pet rename).",
-      "default": "Bit"
+      "description": "What a new pet is called; leave empty for a random name (Mochi, Pixel, Pip…). Change it any time with /pet rename.",
+      "default": ""
     },
     "color": {
       "type": "string",

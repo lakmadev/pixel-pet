@@ -4,6 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 import { TONES, barRuns, cardLines, gradientAt, limitsSvg, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
 import { actionKind, actionLine, focusLine, lineSvg, LINE_COLORS, outcomeOf } from '../hooks/status'
 import { petCard } from '../hooks/card'
+import { SCENES, habitatSvg, sceneFor, sceneGrid } from '../hooks/scene'
 import { ARRIVE_MS, LEAVE_MS, MINI_H, MINI_W, SLOT_MS, WAVE_MS, colorFromDefinition, miniColor, miniDraw, miniFrame } from '../hooks/mini'
 import { lineTwoSvg } from '../hooks/line2'
 import { slotWidth } from '../hooks/minis-view'
@@ -486,7 +487,8 @@ test('/pet outfit, calm, project and card', async ($, on) => {
   expect((await run('project off')).text).toContain('one pet everywhere')
   expect((await run('')).text).not.toContain('Shoppy')
   expect((await run('card')).text).toContain('~/Downloads/')
-  expect(written[0]).toMatch(/^\/home\/me\/Downloads\/.+-pixel-pet\.svg$/)
+  expect(written.find(path => path.includes('Downloads'))).toMatch(/^\/home\/me\/Downloads\/.+-pixel-pet\.svg$/)
+  expect(written).toContain('/home/me/.claude/pixel-pet.json')
 })
 
 test('a plan limit getting close gets one calm line at 80% and one at 95%, re-armed after a reset', () => {
@@ -500,4 +502,68 @@ test('a plan limit getting close gets one calm line at 80% and one at 95%, re-ar
   expect(limitNotice(at(81), noted, NOW)).toContain('81%')
   expect(limitNotice(at(5, 85), noted, NOW)).toBe('notes your weekly limit is at 85%')
   expect(limitNotice([{ kind: 'spend_limit', percent: 99 }], noted, NOW)).toBeUndefined()
+})
+
+test('scenes: nine worlds drawn in code, seamless for scrolling; auto by the clock and the moment', () => {
+  expect(SCENES).toHaveLength(10)
+  for (const scene of SCENES) {
+    const grid = sceneGrid(scene, 16, 8, 0, 32)
+    expect(grid).toHaveLength(8)
+    expect(grid.every(row => row.every(c => c !== null))).toBe(true) // the sky fills whatever's behind
+    // Seamless: each layer repeats every period, so it scrolls on forever without a seam.
+    const wide = sceneGrid(scene, 128, 20, 0)
+    expect(wide.map(row => row.slice(64))).toEqual(wide.map(row => row.slice(0, 64)))
+  }
+  // Through the day: morning, afternoon, evening, night, after midnight.
+  expect([7, 14, 18, 22, 2].map(hour => sceneFor(hour, false))).toEqual(['meadow', 'desert', 'savanna', 'skyline', 'moon'])
+  expect(sceneFor(5, false)).toBe('meadow')
+  expect(sceneFor(0, false)).toBe('moon')
+  expect(sceneFor(14, true)).toBe('lava')
+  // Desktop: scrolling layers while Claude works, still otherwise; the pet stands inside.
+  const pet = petSvg('idle')
+  expect(habitatSvg('city', true, pet)).toContain('repeatCount="indefinite"')
+  expect(habitatSvg('city', false, pet)).not.toContain('to="-')
+  expect(habitatSvg('city', false, pet)).toContain('<svg x="13" y="12"')
+  // Every scene fits in one drawing (the app refuses an Svg past 131072 characters), even moving.
+  for (const scene of SCENES) expect(habitatSvg(scene, true, petSvg('working', { mood: 'idle', color: 'teal' }, 0, 'teal', 5, { outfit: 'santa' })).length).toBeLessThan(110_000)
+  // The card stands the pet in its world.
+  expect(petCard({ name: 'Reaper', color: 'teal', scene: 'desert', days: 1, turns: 2, pets: 3, helpers: 4, greens: 0 })).toContain('url(#shade)')
+})
+
+test('/pet scene picks a world, and the band draws the pet in it on both surfaces', async ($, on) => {
+  await setUp($, on, on => on('command.run', () => ({})))
+  const run = (args: string) => $.command.run({ command: 'pet', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect((await run('scene jungle')).text).toContain('lives in the jungle')
+  const desk = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(JSON.stringify(await desk.drawn())).toContain('in the jungle')
+  const term = await $.ui.mount({ plugin: 'pixel-pet', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(JSON.stringify(await term.drawn())).toContain('"width":14')
+  expect((await run('scene off')).text).toContain('No background')
+  expect(JSON.stringify(await desk.drawn())).not.toContain('in the jungle')
+  expect((await run('scene mars')).text).toContain('Scenes: on')
+  expect((await run('scene on')).text).toContain('morning meadow')
+})
+
+test('one pet everywhere: it lives in a shared file, picked up by every session, with a random name to start', async ($, on) => {
+  const files = new Map<string, string>()
+  const clock = await setUp($, on, on => {
+    mock.env(on, { HOME: '/home/me' })
+    on('fs.read', ($, e) => (files.has((e as { path: string }).path) ? { value: files.get((e as { path: string }).path)! as never } : Promise.reject(new Error('ENOENT'))))
+    on('fs.write', ($, e) => (files.set((e as { path: string; text: string }).path, (e as { path: string; text: string }).text), { value: undefined as never }))
+    on('command.run', () => ({}))
+  })
+  const kept = () => JSON.parse(files.get('/home/me/.claude/pixel-pet.json')!)
+  // Hatched with a random name, never Bit.
+  expect(kept().pet.name).toMatch(/^(Mochi|Pixel|Pip|Nibbles|Byte|Biscuit|Sprout|Dot|Pebble|Noodle|Bean|Comet)$/)
+  const run = (args: string) => $.command.run({ command: 'pet', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  await run('rename Reaper')
+  expect(kept().pet.name).toBe('Reaper')
+  // Another session renames it: this one picks that up within a few seconds.
+  files.set('/home/me/.claude/pixel-pet.json', JSON.stringify({ ...kept(), pet: { ...kept().pet, name: 'Mochi', turns: 41 } }))
+  await clock.advance(11_000)
+  expect((await run('')).text).toContain('Mochi')
+  // A count adds to what the file has now, not to a stale copy.
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await $.turn.complete({ answer: 'ok', durationMs: 900, isAborted: false, turnId: 't', reason: 'answer' })
+  expect(kept().pet.turns).toBe(42)
 })

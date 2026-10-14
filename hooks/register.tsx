@@ -12,6 +12,9 @@ import type { Outfit } from './sprite'
 import { LINE_COLORS, actionKind, actionLine, focusLine, lineSvg, lineWidth, outcomeOf, toneColor } from './status'
 import { LEAVE_MS, colorFromDefinition, miniColor } from './mini'
 import { lineTwoSvg } from './line2'
+import { HABITAT_HEIGHT, HABITAT_WIDTH, SCENES, TIMES_OF_DAY, habitatSvg, isScene, sceneFor } from './scene'
+import type { Scene } from './scene'
+import { HABITAT_COLUMNS, HABITAT_ROWS } from './pet-view'
 import type { Layout } from './line2'
 import type { MinisViewProps } from './minis-view'
 import type { StatusViewProps } from './status-view'
@@ -20,7 +23,7 @@ import type { StatusViewProps } from './status-view'
 type Pet = { name: string; born: number; turns: number; pets: number; color?: string; xp?: number; helpers?: number; greens?: number }
 // Opt-ins, kept across sessions: smaller motion, break nudges, a chirp when it calls you, a name
 // and colour per project, and which hat (auto: the one the date calls for).
-type Prefs = { calm: boolean; breaks: boolean; sound: boolean; perProject: boolean; outfit: 'auto' | 'none' | Outfit }
+type Prefs = { calm: boolean; breaks: boolean; sound: boolean; perProject: boolean; outfit: 'auto' | 'none' | Outfit; scene: 'auto' | 'none' | Scene }
 type Project = { name?: string; color?: string }
 
 const LINES: Record<Mood, string[]> = {
@@ -55,7 +58,7 @@ let lastHatchAt = 0
 let lineTwoLayout: Layout | undefined
 const miniOf = new Map<string, string>()
 
-let prefs: Prefs = { calm: false, breaks: false, sound: false, perProject: false, outfit: 'auto' }
+let prefs: Prefs = { calm: false, breaks: false, sound: false, perProject: false, outfit: 'auto', scene: 'auto' }
 // The session's project, and the names and colours given per project.
 let cwd = ''
 let projects: Record<string, Project> = {}
@@ -77,14 +80,69 @@ const colorNow = (pet: Pet) => previewColor ?? (prefs.perProject ? colorName(pro
 // Until the clock is first read there's no date to dress for.
 const outfitNow = (pet: Pet): Outfit | undefined => (prefs.outfit === 'auto' ? (today ? outfitFor(today, pet.born, utcOffsetMin) : undefined) : prefs.outfit === 'none' ? undefined : prefs.outfit)
 
-export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean, tone: Tone = 'plain'): PetView {
-  return { mood, line, name: nameNow(pet), color: colorNow(pet), isHidden, meter, minis, tone, outfit: outfitNow(pet) ?? 'none', calm: prefs.calm }
+// Its world: the one picked with /pet scene, or on auto the one the clock and the moment call
+// for (a lava cave while it groans over failing tests).
+const sceneNow = (mood: Mood, tone: Tone): Scene | 'none' => {
+  if (prefs.scene !== 'auto') return prefs.scene
+  if (!today) return 'meadow'
+  const d = localDate(today, utcOffsetMin)
+  return sceneFor(d.getUTCHours(), mood === 'oops' && tone === 'bad')
 }
 
-const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', born: 0, turns: 0, pets: 0 }, 'sleepy', 'is fast asleep… zzz', false))
+export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean, tone: Tone = 'plain'): PetView {
+  return { mood, line, name: nameNow(pet), color: colorNow(pet), isHidden, meter, minis, tone, outfit: outfitNow(pet) ?? 'none', calm: prefs.calm, scene: sceneNow(mood, tone) }
+}
 
-// Module state between hooks; the pet's record is rebuilt from the store on reload.
-let pet: Pet = { name: 'Bit', born: 0, turns: 0, pets: 0 }
+const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Pip', born: 0, turns: 0, pets: 0 }, 'sleepy', 'is fast asleep… zzz', false))
+
+// Module state between hooks; the pet's record is read back from the shared file on reload.
+let pet: Pet = { name: 'Pip', born: 0, turns: 0, pets: 0 }
+
+// A new pet hatches with one of these names, unless the `name` setting gives one.
+const NAMES = ['Mochi', 'Pixel', 'Pip', 'Nibbles', 'Byte', 'Biscuit', 'Sprout', 'Dot', 'Pebble', 'Noodle', 'Bean', 'Comet']
+
+// Everything the pet keeps (its record, your settings, the per-project names) lives in one file
+// that every session and every installed copy shares, so it's the same pet everywhere. Each
+// change re-reads the file first and applies itself to that, so two sessions counting at once
+// don't undo each other. The plugin's own store keeps a copy too, for when there's no home folder.
+type Kept = { pet: Pet; prefs: Prefs; projects: Record<string, Project> }
+let keptPath: string | undefined
+let lastSync = 0
+
+async function readKept($: EngineInterface): Promise<Partial<Kept> | undefined> {
+  if (!keptPath) return undefined
+  const text = await $.fs.read(keptPath).catch(() => undefined)
+  try {
+    return text ? (JSON.parse(text) as Partial<Kept>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function keep($: EngineInterface, change: (kept: Kept) => Kept) {
+  const latest = await readKept($)
+  const next = change({ pet: latest?.pet ?? pet, prefs: { ...prefs, ...latest?.prefs }, projects: latest?.projects ?? projects })
+  pet = next.pet
+  prefs = next.prefs
+  projects = next.projects
+  if (keptPath) await $.fs.write(keptPath, `${JSON.stringify(next, null, 2)}\n`).catch(() => undefined)
+  await $.store.set('pet', pet)
+  await $.store.set('prefs', prefs)
+  await $.store.set('projects', projects)
+}
+
+// Picks up what another session changed (a rename, a colour, a setting) every few seconds.
+async function sync($: EngineInterface, now: number) {
+  if (!keptPath || now - lastSync < 10_000) return
+  lastSync = now
+  const kept = await readKept($)
+  if (!kept?.pet) return
+  const before = JSON.stringify([nameNow(pet), colorNow(pet), prefs])
+  pet = kept.pet
+  prefs = { ...prefs, ...kept.prefs }
+  projects = kept.projects ?? projects
+  if (JSON.stringify([nameNow(pet), colorNow(pet), prefs]) !== before) await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
+}
 // A new session finds the pet asleep; the first keystroke wakes it.
 let mood: Mood = 'sleepy'
 let moodUntil = 0
@@ -278,26 +336,25 @@ async function afterCall($: EngineInterface, tool: string, args: Record<string, 
   if (outcome) {
     await announce($, outcome.tone === 'good' ? 'happy' : 'oops', outcome.line, outcome.tone, outcome.tone === 'good' ? 4000 : 6000)
     if (outcome.tone === 'good' && /tests? pass/.test(outcome.line)) {
-      pet = { ...pet, greens: (pet.greens ?? 0) + 1 }
-      await $.store.set('pet', pet)
+      await keep($, kept => ({ ...kept, pet: { ...kept.pet, greens: (kept.pet.greens ?? 0) + 1 } }))
     }
   } else if (isError) await setMood($, 'oops', 3000, lastLine) // a flinch, not news: the line stays
 }
 
 // React first, save after: the blush shouldn't wait on a disk write.
 async function petIt($: EngineInterface) {
-  pet = { ...pet, pets: pet.pets + 1 }
   await setMood($, 'loved', 4000)
-  await $.store.set('pet', pet)
+  await keep($, kept => ({ ...kept, pet: { ...kept.pet, pets: kept.pet.pets + 1 } }))
 }
 
 const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
 const PET_COMMAND = /^\s*\/pet\s+(\S*)$/i
 const OUTFIT_COMMAND = /^\s*\/pet\s+outfit\s+(\S*)$/i
+const SCENE_COMMAND = /^\s*\/pet\s+scene\s+(\S*)$/i
 // The occasion a hat is for works as its name too: `/pet outfit christmas`.
 const OCCASIONS: Record<string, Outfit> = { halloween: 'pumpkin', christmas: 'santa', xmas: 'santa', birthday: 'party', newyear: 'party' }
 const VERBS: [string, string][] = [
-  ['color', 'change its colour'], ['rename', 'give it a new name'], ['outfit', 'auto, none, pumpkin, santa or party'], ['card', 'save a picture of it to share'],
+  ['color', 'change its colour'], ['rename', 'give it a new name'], ['scene', 'its background: on (changes through the day), off, or meadow, desert, jungle…'], ['outfit', 'auto, none, pumpkin, santa or party'], ['card', 'save a picture of it to share'],
   ['calm', 'keep its motion small (on/off)'], ['breaks', 'nudge me to take breaks (on/off)'], ['sound', 'chirp when it needs me (on/off)'],
   ['project', 'its own name and colour in each project (on/off)'], ['hide', 'tuck it away'], ['show', 'bring it back'],
 ]
@@ -374,9 +431,9 @@ const dayOf = (now: number) => localDate(now, utcOffsetMin).toISOString().slice(
 // the SVG. Breaks get their nudge here too.
 async function checkMood($: EngineInterface) {
   const now = await $.clock.now()
-  const wasOutfit = outfitNow(pet)
+  const was = `${outfitNow(pet)}:${sceneNow(mood, 'plain')}`
   today = now
-  if (outfitNow(pet) !== wasOutfit) await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
+  if (`${outfitNow(pet)}:${sceneNow(mood, 'plain')}` !== was) await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
   if (moodUntil && now > moodUntil) {
     const next = baseMood(now)
     // Drifting off from an awake mood goes through dozing first.
@@ -385,6 +442,7 @@ async function checkMood($: EngineInterface) {
   } else if (mood === 'idle' && baseMood(now) === 'sleepy') await setMood($, 'dozing', DOZE_MS)
   else if (prefs.breaks && !moodUntil && (mood === 'idle' || mood === 'working')) await nudge($, now)
   await tendMinis($, now)
+  await sync($, now)
 }
 
 async function nudge($: EngineInterface, now: number) {
@@ -424,8 +482,7 @@ async function hatch($: EngineInterface, id: string, type: string) {
   await update($, view, current => ({ ...current, minis }))
   // A queued helper's turn: draw again when it's due, so its slot starts opening on time.
   if (at > now) $.clock.after(at - now, () => void update($, view, current => ({ ...current, minis })).catch(() => undefined))
-  pet = { ...pet, helpers: (pet.helpers ?? 0) + 1 }
-  await $.store.set('pet', pet)
+  await keep($, kept => ({ ...kept, pet: { ...kept.pet, helpers: (kept.pet.helpers ?? 0) + 1 } }))
 }
 
 async function sayBye($: EngineInterface, id: string) {
@@ -454,6 +511,11 @@ async function definedColor($: EngineInterface, name: string): Promise<string | 
 const baseName = (path: string) => path.split('/').filter(Boolean).pop() ?? path
 const onOff = (arg: string | undefined, current: boolean) => (arg === 'on' ? true : arg === 'off' ? false : !current)
 
+const cardScene = () => {
+  const scene = sceneNow('happy', 'plain')
+  return scene === 'none' ? undefined : scene
+}
+
 // `/pet card`: the picture goes to Downloads (or home), named after the pet.
 async function saveCard($: EngineInterface): Promise<string> {
   const now = await $.clock.now()
@@ -464,7 +526,7 @@ async function saveCard($: EngineInterface): Promise<string> {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'pet'
   const path = `${dir}/${slug}-pixel-pet.svg`
   await $.fs.write(path, petCard({
-    name, color: colorNow(pet), outfit: outfitNow(pet), days: Math.max(0, Math.floor((now - pet.born) / 86_400_000)),
+    name, color: colorNow(pet), outfit: outfitNow(pet), scene: cardScene(), days: Math.max(0, Math.floor((now - pet.born) / 86_400_000)),
     turns: pet.turns, pets: pet.pets, helpers: pet.helpers ?? 0, greens: pet.greens ?? 0,
   }))
   return `Saved ${name}'s card to ${path.replace(home, '~')}. Open it in a browser to share it.`
@@ -480,11 +542,22 @@ export const register: Register = (on, options) => {
     cwd = e.cwd
     const offset = await $.process.run(['date', '+%z'], { timeoutMs: 2000 }).then(r => parseOffset(r.stdout)).catch(() => undefined)
     if (offset !== undefined) utcOffsetMin = offset
-    const saved = (await $.store.get('pet')) as Pet | undefined
-    pet = saved ?? { name: String(options.name ?? 'Bit'), born: now, turns: 0, pets: 0 }
-    if (!saved) await $.store.set('pet', pet)
-    prefs = { ...prefs, ...((await $.store.get('prefs')) as Partial<Prefs> | undefined) }
-    projects = ((await $.store.get('projects')) as Record<string, Project> | undefined) ?? {}
+    const home = await $.env.get('HOME').catch(() => undefined)
+    keptPath = home ? `${home}/.claude/pixel-pet.json` : undefined
+    const kept = await readKept($)
+    const saved = kept?.pet ? undefined : ((await $.store.get('pet')) as Pet | undefined)
+    if (kept?.pet) {
+      pet = kept.pet
+      prefs = { ...prefs, ...kept.prefs }
+      projects = kept.projects ?? {}
+    } else {
+      // The first time with the shared file: carry over this copy's own pet, or hatch one.
+      const configured = String(options.name ?? '').trim()
+      pet = saved ?? { name: configured || NAMES[Math.floor(Math.random() * NAMES.length)]!, born: now, turns: 0, pets: 0 }
+      prefs = { ...prefs, ...((await $.store.get('prefs')) as Partial<Prefs> | undefined) }
+      projects = ((await $.store.get('projects')) as Record<string, Project> | undefined) ?? {}
+      await keep($, () => ({ pet, prefs, projects }))
+    }
     active(now)
     // Which provider bills the tokens, from the switches Claude Code reads (never a key).
     if (await $.env.get('CLAUDE_CODE_USE_BEDROCK').catch(() => undefined)) provider = 'bedrock'
@@ -495,7 +568,8 @@ export const register: Register = (on, options) => {
     const usage = await $.session.usage().catch(() => undefined)
     if (usage) await setMeter($, usage)
     mood = 'sleepy'
-    await update($, view, current => viewOf(pet, 'sleepy', saved ? pick(LINES.sleepy) : 'just hatched and fell asleep… type to wake it', current.isHidden))
+    const isNew = !kept?.pet && !saved
+    await update($, view, current => viewOf(pet, 'sleepy', isNew ? 'just hatched and fell asleep… type to wake it' : pick(LINES.sleepy), current.isHidden))
     $.clock.every(1000, () => void checkMood($).catch(() => undefined))
     return next(e)
   })
@@ -520,6 +594,7 @@ export const register: Register = (on, options) => {
     const partial = e.token.toLowerCase()
     let rows: { text: string; description?: string }[] = []
     if (COLOR_COMMAND.test(before)) rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: hex(COLORS[name]!.body) }))
+    else if (SCENE_COMMAND.test(before)) rows = ['on', 'off', ...SCENES].filter(name => name.startsWith(partial)).map(text => ({ text }))
     else if (OUTFIT_COMMAND.test(before)) rows = ['auto', 'none', ...OUTFITS].filter(name => name.startsWith(partial)).map(text => ({ text }))
     else if (PET_COMMAND.test(before)) rows = VERBS.filter(([verb]) => verb.startsWith(partial)).map(([text, description]) => ({ text, description }))
     return rows.length ? { suggestions: [...offered.suggestions, ...rows] } : offered
@@ -593,8 +668,7 @@ export const register: Register = (on, options) => {
       await setMood($, 'idle')
       return done
     }
-    pet = { ...pet, turns: pet.turns + 1 }
-    await $.store.set('pet', pet)
+    await keep($, kept => ({ ...kept, pet: { ...kept.pet, turns: kept.pet.turns + 1 } }))
     // A long turn calls you back to look; a quick one just gets a happy bounce.
     if (now - turnAt >= LONG_TURN_MS) await call($, `is done${touched.size ? ` · ${touched.size} file${touched.size === 1 ? '' : 's'} changed` : ''} · come take a look 👀`, 'good')
     else await setMood($, 'happy', 6000)
@@ -621,8 +695,7 @@ export const register: Register = (on, options) => {
     const arg = rest[0]?.toLowerCase()
     const redraw = () => update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
     const savePrefs = async (next: Partial<Prefs>) => {
-      prefs = { ...prefs, ...next }
-      await $.store.set('prefs', prefs)
+      await keep($, kept => ({ ...kept, prefs: { ...kept.prefs, ...next } }))
       await redraw()
     }
     const where = prefs.perProject ? ` in ${baseName(cwd)}` : ''
@@ -637,25 +710,15 @@ export const register: Register = (on, options) => {
         return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
       }
       previewColor = undefined
-      if (prefs.perProject) {
-        projects = { ...projects, [cwd]: { ...projects[cwd], color: choice } }
-        await $.store.set('projects', projects)
-      } else {
-        pet = { ...pet, color: choice }
-        await $.store.set('pet', pet)
-      }
+      if (prefs.perProject) await keep($, kept => ({ ...kept, projects: { ...kept.projects, [cwd]: { ...kept.projects[cwd], color: choice } } }))
+      else await keep($, kept => ({ ...kept, pet: { ...kept.pet, color: choice } }))
       await redraw()
       return { text: `${nameNow(pet)} is now ${choice}${where}.` }
     }
     if (verb === 'rename' && rest.length) {
       const name = rest.join(' ').slice(0, 24)
-      if (prefs.perProject) {
-        projects = { ...projects, [cwd]: { ...projects[cwd], name } }
-        await $.store.set('projects', projects)
-      } else {
-        pet = { ...pet, name }
-        await $.store.set('pet', pet)
-      }
+      if (prefs.perProject) await keep($, kept => ({ ...kept, projects: { ...kept.projects, [cwd]: { ...kept.projects[cwd], name } } }))
+      else await keep($, kept => ({ ...kept, pet: { ...kept.pet, name } }))
       await redraw()
       return { text: `Your pet is now called ${name}${where}.` }
     }
@@ -666,6 +729,14 @@ export const register: Register = (on, options) => {
       await savePrefs({ outfit: choice })
       const wearing = outfitNow(pet)
       return { text: choice === 'auto' ? `${nameNow(pet)} dresses for the date${wearing ? `: today it's wearing a ${wearing} hat` : ''}.` : choice === 'none' ? 'No hats.' : `${nameNow(pet)} is wearing a ${choice} hat until you change it (/pet outfit auto goes back to dressing for the date).` }
+    }
+    if (verb === 'scene') {
+      // `off` and `on` are the plain words for no background and the automatic one.
+      const named = arg === 'off' ? 'none' : arg === 'on' ? 'auto' : arg
+      const choice = named === 'auto' || named === 'none' || isScene(named) ? (named as Prefs['scene']) : undefined
+      if (!choice) return { text: `Scenes: on (changes through the day: ${TIMES_OF_DAY.map(([, time, scene]) => `${time} ${scene}`).join(', ')}), off, or one of ${SCENES.join(', ')}.` }
+      await savePrefs({ scene: choice })
+      return { text: choice === 'auto' ? `${nameNow(pet)}'s world changes through the day: ${TIMES_OF_DAY.map(([, time, scene]) => `${time} ${scene}`).join(', ')}.` : choice === 'none' ? 'No background: just the pet. /pet scene on brings it back.' : `${nameNow(pet)} now lives in the ${choice}.` }
     }
     if (verb === 'card') return { text: await saveCard($) }
     if (verb === 'calm' || verb === 'breaks' || verb === 'sound' || verb === 'project') {
@@ -724,12 +795,13 @@ export const register: Register = (on, options) => {
     // with their motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
-      const pet: PetViewProps = { mood: current.mood, look, color: current.color, outfit: current.outfit, tired, calm: current.calm }
+      // In its world, the scenery scrolls while Claude works (still in calm mode).
+      const pet: PetViewProps = { mood: current.mood, look, color: current.color, outfit: current.outfit, tired, calm: current.calm, scene: current.scene, isMoving: isWorking && !current.calm }
       const status: StatusViewProps = { name: current.name, line: current.line, calm: current.calm, ...(current.tone === 'plain' ? {} : { color: toneColor(colors, current.tone) }) }
       const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), segments: parts, isWorking: isShimmering, width: METER_CELLS }
       return (
         <Box gap={2} alignItems="center">
-          <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
+          <Client key="pet" module="./pet-view.tsx" width={current.scene === 'none' ? 10 : HABITAT_COLUMNS} height={current.scene === 'none' ? 4 : HABITAT_ROWS} props={pet} />
           <Box flexDirection="column" justifyContent="center">
             <Client key="status" module="./status-view.tsx" props={status} />
             <Box key="meter-row" alignItems="flex-end">
@@ -750,13 +822,14 @@ export const register: Register = (on, options) => {
     const from = drawnPercent
     if (percent !== undefined) drawnPercent = percent
     const { Svg } = $.ui.resolve(e)
-    // An invisible layer over the sprite catches the click; the SVG itself can't.
+    // An invisible layer over the sprite (and its world) catches the click; the SVG itself can't.
+    const hitColumns = current.scene === 'none' ? 6 : 9
     let hit: RenderChildren = null
     if (e.surface === 'desktop') {
       const { Client } = $.ui.resolve(e)
       hit = (
         <Box position="absolute" top={0} left={0}>
-          <Client key="pet-hit" module="./hit.tsx" width={6} height={2} props={{ columns: 6, rows: 2 }} />
+          <Client key="pet-hit" module="./hit.tsx" width={hitColumns} height={2} props={{ columns: hitColumns, rows: 2 }} />
         </Box>
       )
     }
@@ -779,10 +852,16 @@ export const register: Register = (on, options) => {
     lineTwoLayout = two.layout
     const helpersAlt = current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`)
     const style = { outfit, tired, calm: current.calm }
+    // The pet, standing in its world when it has one; the scenery scrolls while Claude works.
+    const sprite = petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color, 5, style)
+    const petAlt = `${current.name}, a pixel pet, ${current.mood}${outfit ? `, wearing a ${outfit} hat` : ''}`
+    const petImage = current.scene === 'none'
+      ? <Svg source={sprite} alt={petAlt} width={50} height={40} />
+      : <Svg source={habitatSvg(current.scene, isWorking && !current.calm, sprite)} alt={`${petAlt}, in the ${current.scene}`} width={HABITAT_WIDTH} height={HABITAT_HEIGHT} />
     return (
       <Box gap={2} alignItems="center">
         <Box>
-          <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color, 5, style)} alt={`${current.name}, a pixel pet, ${current.mood}${outfit ? `, wearing a ${outfit} hat` : ''}`} width={50} height={40} />
+          {petImage}
           {hit}
         </Box>
         <Box flexDirection="column" justifyContent="center">

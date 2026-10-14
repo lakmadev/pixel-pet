@@ -27,6 +27,8 @@ export type PetView = {
   // The hat it's wearing today ('none' without one), and whether it should keep its motion small.
   outfit: 'pumpkin' | 'santa' | 'party' | 'none'
   calm: boolean
+  // The little world it stands in, or 'none'.
+  scene: 'meadow' | 'desert' | 'jungle' | 'city' | 'skyline' | 'snow' | 'moon' | 'savanna' | 'lava' | 'mountains' | 'none'
 }
 
 declare module 'claude-code' {
