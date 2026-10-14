@@ -1,8 +1,11 @@
-// The terminal's status line. Text there moves in whole rows only, so a change can't glide; it
-// rolls instead: the old words fade out, then the new ones fade in, in about a quarter second.
+// The terminal's status line. The name stays put; text there moves in whole rows only, so the
+// words after it can't glide: they roll instead, the old ones fading out, then the new ones
+// fading in, in about a quarter second (calm: they simply change). Good news, bad news and
+// "needs you" lines take a colour.
 import type { ClientModule } from 'claude-code'
 
-export type StatusViewProps = { name: string; line: string }
+// `color` is left out for plain narration (a Client's props can't hold undefined).
+export type StatusViewProps = { name: string; line: string; color?: string; calm: boolean }
 
 type Ref = { t: number; line: string; previous?: string; changedAt: number }
 type State = { ref: Ref }
@@ -28,14 +31,14 @@ const StatusView: ClientModule<StatusViewProps, State> = (props, surface) => {
     })
   }
 
-  const since = ref.t - ref.changedAt
+  const since = props.calm ? Infinity : ref.t - ref.changedAt
   const name = <Text bold color="claude">{props.name}</Text>
   if (ref.previous !== undefined && since < OUT_MS) {
     return <Text wrap="truncate">{name}<Text dimColor> {ref.previous}</Text></Text>
   }
   if (ref.previous !== undefined && since < OUT_MS + GAP_MS) return <Text wrap="truncate">{name}</Text>
   const isFadingIn = ref.previous !== undefined && since < OUT_MS + GAP_MS + IN_MS
-  return <Text wrap="truncate">{name}<Text dimColor={isFadingIn}> {ref.line}</Text></Text>
+  return <Text wrap="truncate">{name}<Text color={props.color} dimColor={isFadingIn}> {ref.line}</Text></Text>
 }
 
 export default StatusView

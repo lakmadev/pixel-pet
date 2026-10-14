@@ -1,14 +1,16 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { TONES, barRuns, cardLines, gradientAt, limitsSvg, meterSvg, resetIn, segments, segmentsText } from '../hooks/meter'
-import { actionLine, lineSvg, LINE_COLORS } from '../hooks/status'
+import { actionKind, actionLine, focusLine, lineSvg, LINE_COLORS, outcomeOf } from '../hooks/status'
+import { petCard } from '../hooks/card'
 import { ARRIVE_MS, LEAVE_MS, MINI_H, MINI_W, SLOT_MS, WAVE_MS, colorFromDefinition, miniColor, miniDraw, miniFrame } from '../hooks/mini'
 import { lineTwoSvg } from '../hooks/line2'
 import { slotWidth } from '../hooks/minis-view'
-import { previewFor, reactionTo, sourceOf } from '../hooks/register'
-import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, paletteFor, petSvg, sprite, toRuns } from '../hooks/sprite'
+import { limitNotice, parseOffset, previewFor, reactionTo, sourceOf, tiredness } from '../hooks/register'
+import { COLORS, COLOR_NAMES, HEIGHT, WIDTH, blend, colorName, outfitFor, paletteFor, periodOf, petSvg, sprite, toRuns } from '../hooks/sprite'
 
-const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked', 'dozing', 'waking'] as const
+const MOODS = ['idle', 'working', 'happy', 'oops', 'sleepy', 'loved', 'reading', 'wince', 'shocked', 'dozing', 'waking', 'calling'] as const
 const USAGE = { startedAt: 0, context: { tokens: 124_000, window: 200_000, percent: 62 }, cost: { usd: 1.84 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85, resetsAt: new Date(Date.now() + 2 * 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 40 }] }
 
 test('28 colours by name, aliases, teal by default', () => {
@@ -321,4 +323,181 @@ test('a subagent hatches a helper; when it finishes the helper waves bye and lea
   const later = JSON.stringify(await ui.drawn())
   expect(later).not.toContain('Explore helper')
   expect(later).toContain('Plan helper') // its agent is still running
+})
+
+test('the name stays put; only the words after it slide, and news takes a colour', () => {
+  const svg = lineSvg('Reaper', 'is running the tests 🧪', 'is reading auth.ts…', LINE_COLORS.dark)
+  // The name is its own text, with nothing animating it.
+  const name = /<text x="0" y="15" fill="#d97757" font-weight="700">Reaper<\/text>/
+  expect(svg).toMatch(name)
+  // Each status carries the name invisibly, so it starts where the name ends.
+  expect(svg.match(/fill-opacity="0">Reaper</g)).toHaveLength(2)
+  expect(lineSvg('Reaper', 'saw 3 tests fail ❌', undefined, LINE_COLORS.dark, { tone: 'bad' })).toContain('#f87171')
+  // Calm: the words cross-fade in place.
+  const calm = lineSvg('Reaper', 'b', 'a', LINE_COLORS.dark, { calm: true })
+  expect(calm).not.toContain('attributeName="y"')
+  expect(calm).toContain('attributeName="opacity"')
+})
+
+test('outcomes worth a reaction: tests, a push, a broken build; the rest passes quietly', () => {
+  expect(outcomeOf('Bash', { command: 'npm test' }, false, 'Tests: 42 passed, 42 total')).toEqual({ tone: 'good', line: 'cheers: all 42 tests pass ✅' })
+  expect(outcomeOf('Bash', { command: 'pytest -q' }, true, '3 failed, 10 passed in 1.2s')).toEqual({ tone: 'bad', line: 'saw 3 tests fail ❌' })
+  expect(outcomeOf('Bash', { command: 'vitest run' }, true, '')).toEqual({ tone: 'bad', line: 'saw the tests fail ❌' })
+  expect(outcomeOf('Bash', { command: 'git push origin main' }, false)).toMatchObject({ tone: 'good' })
+  expect(outcomeOf('Bash', { command: 'git push' }, true)).toMatchObject({ tone: 'bad' })
+  expect(outcomeOf('Bash', { command: 'npm run build' }, true)).toEqual({ tone: 'bad', line: 'saw the build break 🔨' })
+  expect(outcomeOf('Bash', { command: 'npm run build' }, false)).toBeUndefined()
+  expect(outcomeOf('Bash', { command: 'grep x y' }, true)).toBeUndefined()
+  expect(outcomeOf('Read', { file_path: 'a' }, false)).toBeUndefined()
+  // A run of one kind is told once; a different kind is news.
+  expect(actionKind('Read', { file_path: 'a' })).toBe(actionKind('Read', { file_path: 'b' }))
+  expect(actionKind('Bash', { command: 'npm test' })).not.toBe(actionKind('Bash', { command: 'git push' }))
+  expect(focusLine(23, 1)).toBe('is deep in it · 23 steps · 1 file changed')
+})
+
+test('hats for the season and its birthday, worn through every bob and blink', () => {
+  const at = (iso: string) => Date.parse(iso)
+  const born = at('2025-03-14T10:00:00Z')
+  expect(outfitFor(at('2026-10-31T12:00:00Z'), born)).toBe('pumpkin')
+  expect(outfitFor(at('2026-10-20T12:00:00Z'), born)).toBeUndefined()
+  expect(outfitFor(at('2026-12-24T12:00:00Z'), born)).toBe('santa')
+  expect(outfitFor(at('2027-01-01T12:00:00Z'), born)).toBe('party')
+  expect(outfitFor(at('2026-03-14T12:00:00Z'), born)).toBe('party')
+  expect(outfitFor(at('2025-03-14T18:00:00Z'), born)).toBeUndefined() // the day it hatched isn't a birthday yet
+  // The date where the person is: 20:00 UTC on 24 October is already the 25th in India (+05:30).
+  expect(outfitFor(at('2026-10-24T20:00:00Z'), born, 0)).toBeUndefined()
+  expect(outfitFor(at('2026-10-24T20:00:00Z'), born, 330)).toBe('pumpkin')
+  expect(parseOffset('+0530\n')).toBe(330)
+  expect(parseOffset('-0800')).toBe(-480)
+  expect(parseOffset('PST')).toBeUndefined()
+  const pumpkin = JSON.stringify(sprite('idle', 0, 0, 'teal', { outfit: 'pumpkin' }))
+  expect(pumpkin).toContain(String(0xff8c1a))
+  const svg = petSvg('working', undefined, 0, 'teal', 5, { outfit: 'santa' })
+  expect(svg).toContain('#e03131')
+  // The blink and glance layers keep the hat on.
+  expect(svg.split('<g opacity="0">').slice(1).every(layer => !layer.includes('#4fd1c5') || layer.length > 0)).toBe(true)
+})
+
+test('a full context slows it down; calm keeps it nearly still', () => {
+  expect(tiredness(40)).toBe(0)
+  expect(tiredness(95)).toBe(1)
+  expect(periodOf('working', 1)).toBe(periodOf('working', 0) * 2)
+  expect(periodOf('happy', 1)).toBe(periodOf('happy', 0))
+  expect(petSvg('idle', undefined, 0, 'teal', 5, { calm: true })).not.toContain('<animateTransform')
+  const frames = new Set(Array.from({ length: 30 }, (_, i) => JSON.stringify(sprite('working', i * 100, 0, 'teal', { calm: true }).map(row => row.map(c => c !== null)))))
+  expect(frames.size).toBeLessThanOrEqual(2) // only the glance changes, never the position
+  expect(JSON.stringify(sprite('calling', 0))).toContain(String(0xfbbf24))
+})
+
+test('the share card: the pet, its name and what you have done together', () => {
+  const svg = petCard({ name: 'Reaper <3', color: 'pink', outfit: 'pumpkin', days: 12, turns: 1234, pets: 40, helpers: 9, greens: 0 })
+  expect(svg).toContain('width="1200" height="630"')
+  expect(svg).toContain('Reaper &lt;3')
+  expect(svg).toContain('>1,234<')
+  expect(svg).toContain('helpers hatched')
+  expect(svg).toContain('#ff8c1a')
+})
+
+const BAND = { hasSurvey: false, isWorking: true, maxRows: 12 } as never
+type On = Parameters<TestBody>[1]
+// The engine's side for a session in /r/shop; `more` adds stubs, which must come before the first call.
+const setUp = async ($: Parameters<TestBody>[0], on: On, more: (on: On) => void = () => undefined) => {
+  more(on)
+  mock.store(on)
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: undefined as never }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('prompt.edit', ($, e) => ({ text: e.text, cursor: e.cursor }))
+  await $.session.start({ cwd: '/r/shop', surface: 'terminal', isInteractive: true })
+  return clock
+}
+
+test('needing you: it calls on a permission prompt, and your typing answers it', async ($, on) => {
+  const clock = await setUp($, on, on => on('classic.Notification', () => ({})))
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await clock.advance(2000)
+  await $.classic.Notification({ message: 'Claude needs your permission to use Bash', notification_type: 'permission_prompt' })
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('needs your OK')
+  expect(drawn).toContain('calling')
+  await clock.advance(60_000)
+  expect(JSON.stringify(await ui.drawn())).toContain('needs your OK') // still waving a minute later
+  const edit = ($.prompt as unknown as { edit: (e: object) => Promise<unknown> }).edit
+  await edit({ origin: { kind: 'composer' }, text: 'y', cursor: 1, start: 1, end: 1, inputText: 'y', key: { key: 'y' } })
+  expect(JSON.stringify(await ui.drawn())).not.toContain('"alt":"Bit needs your OK')
+})
+
+test('a long turn calls you back when it is done; a quick one just bounces', async ($, on) => {
+  const clock = await setUp($, on)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await clock.advance(45_000)
+  await $.turn.complete({ answer: 'ok', durationMs: 45_000, isAborted: false, turnId: 't1', reason: 'answer' })
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(JSON.stringify(await ui.drawn())).toContain('come take a look')
+  await $.turn.start({ text: 'again', turnId: 't2' })
+  await clock.advance(3000)
+  await $.turn.complete({ answer: 'ok', durationMs: 3000, isAborted: false, turnId: 't2', reason: 'answer' })
+  expect(JSON.stringify(await ui.drawn())).not.toContain('come take a look')
+})
+
+test('narration: a kind of work is told once, deep in a long turn it settles, and results break through', async ($, on) => {
+  let answer: object = { result: {} }
+  const clock = await setUp($, on, on => on('tool.call', () => answer as never))
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await clock.advance(2000)
+  await $.tool.call({ tool: 'Read', file_path: '/r/a.ts' })
+  await clock.advance(1500)
+  expect(JSON.stringify(await ui.drawn())).toContain('is reading a.ts')
+  await $.tool.call({ tool: 'Read', file_path: '/r/b.ts' })
+  await clock.advance(1500)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('is reading b.ts') // same kind: no new line
+  for (let i = 0; i < 12; i++) await $.tool.call({ tool: 'Edit', file_path: `/r/f${i % 3}.ts`, old_string: 'a', new_string: 'b' })
+  await clock.advance(1500)
+  expect(JSON.stringify(await ui.drawn())).toContain('is deep in it')
+  answer = { result: {}, text: 'Tests: 42 passed, 42 total' }
+  await $.tool.call({ tool: 'Bash', command: 'npm test' })
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('all 42 tests pass')
+  expect(drawn).toContain('#4ade80')
+})
+
+test('/pet outfit, calm, project and card', async ($, on) => {
+  const written: string[] = []
+  await setUp($, on, on => {
+    mock.env(on, { HOME: '/home/me' })
+    on('fs.exists', () => ({ value: true }))
+    on('fs.write', ($, e) => (written.push((e as { path: string }).path), { value: undefined as never }))
+    on('command.run', () => ({}))
+  })
+  const run = (args: string) => $.command.run({ command: 'pet', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect((await run('outfit christmas')).text).toContain('santa hat')
+  expect((await run('outfit pumpkin')).text).toContain('pumpkin hat')
+  const ui = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(JSON.stringify(await ui.drawn())).toContain('wearing a pumpkin hat')
+  expect((await run('calm')).text).toContain('Calm:')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('animateTransform')
+  expect((await run('project on')).text).toContain('Per project on')
+  expect((await run('rename Shoppy')).text).toContain('Shoppy in shop')
+  expect((await run('')).text).toContain('Shoppy')
+  expect((await run('project off')).text).toContain('one pet everywhere')
+  expect((await run('')).text).not.toContain('Shoppy')
+  expect((await run('card')).text).toContain('~/Downloads/')
+  expect(written[0]).toMatch(/^\/home\/me\/Downloads\/.+-pixel-pet\.svg$/)
+})
+
+test('a plan limit getting close gets one calm line at 80% and one at 95%, re-armed after a reset', () => {
+  const noted = new Set<string>()
+  const at = (p5: number, p7 = 10) => [{ kind: 'five_hour', percent: p5, resetsAt: '2026-10-09T12:38:00Z' }, { kind: 'seven_day', percent: p7 }]
+  expect(limitNotice(at(70), noted, NOW)).toBeUndefined()
+  expect(limitNotice(at(82), noted, NOW)).toBe('notes your 5-hour limit is at 82% · resets in 38m')
+  expect(limitNotice(at(88), noted, NOW)).toBeUndefined()
+  expect(limitNotice(at(96), noted, NOW)).toBe('notes your 5-hour limit is at 96% · resets in 38m')
+  expect(limitNotice(at(5), noted, NOW)).toBeUndefined()
+  expect(limitNotice(at(81), noted, NOW)).toContain('81%')
+  expect(limitNotice(at(5, 85), noted, NOW)).toBe('notes your weekly limit is at 85%')
+  expect(limitNotice([{ kind: 'spend_limit', percent: 99 }], noted, NOW)).toBeUndefined()
 })

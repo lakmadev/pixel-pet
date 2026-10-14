@@ -23,6 +23,46 @@ const SHELL: [RegExp, string][] = [
   [/\b(rm|mv|cp|mkdir)\b/, 'is moving files around…'],
 ]
 
+// What kind of work a call is, so a run of the same kind (five reads in a row) is told once.
+export function actionKind(tool: string, args: Record<string, unknown>): string | undefined {
+  if (tool === 'Read' || tool === 'NotebookRead') return 'read'
+  if (tool === 'Edit' || tool === 'MultiEdit' || tool === 'Write' || tool === 'NotebookEdit') return 'edit'
+  if (tool === 'Grep' || tool === 'Glob' || tool === 'LS') return 'search'
+  if (tool === 'WebSearch' || tool === 'WebFetch') return 'web'
+  if (tool === 'Bash') {
+    const cmd = String(args.command ?? '')
+    const at = SHELL.findIndex(([re]) => re.test(cmd))
+    return at < 0 ? 'shell' : `shell:${at}`
+  }
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*)__/.exec(tool)?.[1]
+  if (mcp) return `mcp:${mcp}`
+  return actionLine(tool, args) === undefined ? undefined : tool
+}
+
+const shellRe = (line: string) => SHELL.find(([, l]) => l.startsWith(line))![0]
+const TESTS = shellRe('is running the tests')
+const BUILD = shellRe('is building')
+const count = (text: string, re: RegExp) => Number(re.exec(text)?.[1] ?? 0)
+
+// What came of a call worth reacting to: tests passing or failing, a push landing or bouncing,
+// a build breaking. Undefined for everything else, which the pet lets pass without comment.
+export function outcomeOf(tool: string, args: Record<string, unknown>, isError: boolean, text = ''): { tone: 'good' | 'bad'; line: string } | undefined {
+  if (tool !== 'Bash') return undefined
+  const cmd = String(args.command ?? '')
+  if (TESTS.test(cmd)) {
+    const failed = count(text, /(\d+)\s+(?:tests?\s+)?(?:failed|failing|failures?)\b/i)
+    const passed = count(text, /(\d+)\s+(?:tests?\s+)?(?:passed|passing)\b/i)
+    if (isError || failed > 0) return { tone: 'bad', line: failed > 0 ? `saw ${failed} test${failed === 1 ? '' : 's'} fail ❌` : 'saw the tests fail ❌' }
+    return { tone: 'good', line: passed > 0 ? `cheers: all ${passed} tests pass ✅` : 'cheers: the tests pass ✅' }
+  }
+  if (/\bgit push\b/.test(cmd)) return isError ? { tone: 'bad', line: 'saw the push bounce 😬' } : { tone: 'good', line: 'watched it ship 🚀' }
+  if (isError && BUILD.test(cmd)) return { tone: 'bad', line: 'saw the build break 🔨' }
+  return undefined
+}
+
+// Once a turn runs long, one quiet summary instead of a line per step.
+export const focusLine = (steps: number, files: number) => `is deep in it · ${steps} steps${files ? ` · ${files} file${files === 1 ? '' : 's'} changed` : ''}`
+
 // The line for a tool call that's starting, or undefined for a tool not worth a line.
 export function actionLine(tool: string, args: Record<string, unknown>): string | undefined {
   const t = tool
@@ -51,25 +91,31 @@ export function actionLine(tool: string, args: Record<string, unknown>): string 
   return undefined
 }
 
-export type LineColors = { name: string; text: string }
+export type LineColors = { name: string; text: string; good: string; bad: string; ask: string }
 export const LINE_COLORS: Record<'dark' | 'light', LineColors> = {
-  dark: { name: '#d97757', text: '#e6e6e6' },
-  light: { name: '#c4613f', text: '#1f2328' },
+  dark: { name: '#d97757', text: '#e6e6e6', good: '#4ade80', bad: '#f87171', ask: '#fbbf24' },
+  light: { name: '#c4613f', text: '#1f2328', good: '#15803d', bad: '#b91c1c', ask: '#b45309' },
 }
+export const toneColor = (colors: LineColors, tone: 'plain' | 'good' | 'bad' | 'ask' = 'plain') => (tone === 'plain' ? colors.text : colors[tone])
 
 const escape = (s: string) => s.replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!)
 
-// Desktop: the line as SVG text. A new line rises from below while the old one drifts up and
-// fades. Each layer rests where a still image should be, so without SMIL only the new line shows.
+// Desktop: the line as SVG text. The name stays put; only what follows it moves: the new words
+// rise from below while the old ones drift up and fade (calm: they just cross-fade). Each status
+// carries the name invisibly in front of it, so it starts exactly where the name ends in any font.
+// Each layer rests where a still image should be, so without SMIL only the new line shows.
 export const lineWidth = (name: string, line: string, previous?: string) => Math.min(640, Math.ceil((name.length + 1 + Math.max(line.length, previous?.length ?? 0)) * 7.9) + 24)
 
-export function lineSvg(name: string, line: string, previous: string | undefined, colors: LineColors): string {
+export function lineSvg(name: string, line: string, previous: string | undefined, colors: LineColors, { tone = 'plain', calm = false }: { tone?: 'plain' | 'good' | 'bad' | 'ask'; calm?: boolean } = {}): string {
   const width = lineWidth(name, line, previous)
-  const text = (l: string) => `<tspan fill="${colors.name}" font-weight="700">${escape(name)}</tspan><tspan fill="${colors.text}"> ${escape(l)}</tspan>`
+  const status = (l: string, fill: string) => `<tspan font-weight="700" fill-opacity="0">${escape(name)}</tspan><tspan fill="${fill}"> ${escape(l)}</tspan>`
   const ease = 'dur="0.38s" calcMode="spline" keyTimes="0;1" keySplines="0.2 0.8 0.2 1" fill="freeze"'
-  const old = previous !== undefined && previous !== line
-    ? `<text x="0" y="-4" opacity="0">${text(previous)}<animate attributeName="y" values="15;-4" ${ease}/><animate attributeName="opacity" values="1;0" ${ease}/></text>`
+  const isChange = previous !== undefined && previous !== line
+  const old = isChange
+    ? `<text x="0" y="${calm ? 15 : -4}" opacity="0">${status(previous, colors.text)}${calm ? '' : `<animate attributeName="y" values="15;-4" ${ease}/>`}<animate attributeName="opacity" values="1;0" ${ease}/></text>`
     : ''
-  const rise = old ? `<animate attributeName="y" values="32;15" ${ease}/><animate attributeName="opacity" values="0;1" ${ease}/>` : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" viewBox="0 0 ${width} 20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14">${old}<text x="0" y="15">${text(line)}${rise}</text></svg>`
+  const rise = isChange ? `${calm ? '' : `<animate attributeName="y" values="32;15" ${ease}/>`}<animate attributeName="opacity" values="0;1" ${ease}/>` : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" viewBox="0 0 ${width} 20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif" font-size="14">`
+    + `${old}<text x="0" y="15">${status(line, toneColor(colors, tone))}${rise}</text>`
+    + `<text x="0" y="15" fill="${colors.name}" font-weight="700">${escape(name)}</text></svg>`
 }

@@ -17,6 +17,8 @@ export type LineTwo = {
   bill?: string
   hasInfo: boolean
   tones: Tones & { text: string }
+  // Calm: the helpers stand still instead of bobbing.
+  calm?: boolean
 }
 
 const PX = 5
@@ -76,7 +78,7 @@ export function lineTwoSvg(line: LineTwo, previous: Layout | undefined): { svg: 
 
   const helpers = minis.map(m => {
     const at = place(m.id, 5)
-    return `${at.open}${miniBody(m, PX)}${at.close}`
+    return `${at.open}${miniBody(m, PX, line.calm)}${at.close}`
   })
   const body = place('content', 0)
   const width = Math.ceil(Math.max(contentX + x, (previous?.get('content') ?? 0) + x))

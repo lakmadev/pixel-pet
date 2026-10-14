@@ -4,8 +4,10 @@ import type { ClientModule } from 'claude-code'
 
 import type { Mood } from '../types'
 import { DEFAULT_COLOR, blend, sprite, toRuns } from './sprite'
+import type { Outfit, Style } from './sprite'
 
-export type PetViewProps = { mood: Mood; look: number; color: string }
+// `outfit` is 'none' without a hat: a Client's props can't hold undefined.
+export type PetViewProps = { mood: Mood; look: number; color: string; outfit: Outfit | 'none'; tired: number; calm: boolean }
 
 type Ref = { t: number; mood: Mood; color: string; from?: { mood: Mood; color: string; at: number } }
 type State = { ref: Ref }
@@ -37,11 +39,12 @@ const PetView: ClientModule<PetViewProps, State> = (props, surface) => {
     })
   }
 
-  let grid = sprite(ref.mood, ref.t, props.look, ref.color ?? DEFAULT_COLOR)
+  const style: Style = { outfit: props.outfit === 'none' ? undefined : props.outfit, tired: props.tired, calm: props.calm }
+  let grid = sprite(ref.mood, ref.t, props.look, ref.color ?? DEFAULT_COLOR, style)
   if (ref.from) {
     const k = (ref.t - ref.from.at) / FADE_MS
     if (k >= 1) ref.from = undefined
-    else grid = blend(sprite(ref.from.mood, ref.t, 0, ref.from.color), grid, k * k * (3 - 2 * k)) // smoothstep
+    else grid = blend(sprite(ref.from.mood, ref.t, 0, ref.from.color, style), grid, k * k * (3 - 2 * k)) // smoothstep
   }
 
   return (

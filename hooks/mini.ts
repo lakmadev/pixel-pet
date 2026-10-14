@@ -61,7 +61,7 @@ export const seedOf = (id: string) => [...id].reduce((h, ch) => (h * 31 + ch.cha
 // it waves, floats up and fades. Laid out by the band's second line (line2.ts).
 export const SLOT_MS = 380
 
-export function miniBody(mini: { id: string; color: string; state: 'here' | 'bye'; age: number }, px = 5): string {
+export function miniBody(mini: { id: string; color: string; state: 'here' | 'bye'; age: number }, px = 5, calm = false): string {
   const w = MINI_W * px
   const h = MINI_H * px
   const rects = (grid: Grid) => grid.map((row, y) => row.map((c, x) => (c === null ? '' : `<rect x="${x * px}" y="${y * px}" width="${px}" height="${px}" fill="${hex(c)}"/>`)).join('')).join('')
@@ -76,7 +76,7 @@ export function miniBody(mini: { id: string; color: string; state: 'here' | 'bye
   const spline = 'calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1"'
   const bob = `<animateTransform attributeName="transform" type="translate" values="0 0;0 ${-px * 0.7};0 0" keyTimes="0;0.5;1" dur="${560 + (seed % 240)}ms" ${spline} repeatCount="indefinite"/>`
   const blink = `<g opacity="0">${rects(miniDraw(mini.color, { blink: true }))}<animate attributeName="opacity" values="0;1" keyTimes="0;0.96" calcMode="discrete" dur="${2900 + (seed % 900)}ms" begin="${-(seed % 2900)}ms" repeatCount="indefinite"/></g>`
-  const body = `<g>${rects(miniDraw(mini.color))}${blink}${bob}</g>`
+  const body = `<g>${rects(miniDraw(mini.color))}${blink}${calm ? '' : bob}</g>`
   if (mini.age >= SLOT_MS + ARRIVE_MS) return body
   // Not yet popped: hold at nothing while the slot opens, then spring out from the middle.
   const wait = Math.max(0, SLOT_MS - mini.age)

@@ -1,13 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { ContextMeter, Mini, Mood, PetView } from '../types'
-import { TONES, cardLines, hex, segments } from './meter'
+import type { ContextMeter, Mini, Mood, PetView, Tone } from '../types'
+import { petCard } from './card'
+import { TONES, cardLines, hex, resetIn, segments } from './meter'
 import type { Source } from './meter'
 import type { MeterViewProps } from './meter-view'
 import type { PetViewProps } from './pet-view'
-import { COLOR_NAMES, COLORS, DEFAULT_COLOR, colorName, petSvg } from './sprite'
-import { LINE_COLORS, actionLine, lineSvg, lineWidth } from './status'
+import { COLOR_NAMES, COLORS, DEFAULT_COLOR, OUTFITS, colorName, localDate, outfitFor, petSvg } from './sprite'
+import type { Outfit } from './sprite'
+import { LINE_COLORS, actionKind, actionLine, focusLine, lineSvg, lineWidth, outcomeOf, toneColor } from './status'
 import { LEAVE_MS, colorFromDefinition, miniColor } from './mini'
 import { lineTwoSvg } from './line2'
 import type { Layout } from './line2'
@@ -15,7 +17,11 @@ import type { MinisViewProps } from './minis-view'
 import type { StatusViewProps } from './status-view'
 
 // `xp` is a leftover field from when the pet had levels; old records keep it, nothing reads it.
-type Pet = { name: string; born: number; turns: number; pets: number; color?: string; xp?: number }
+type Pet = { name: string; born: number; turns: number; pets: number; color?: string; xp?: number; helpers?: number; greens?: number }
+// Opt-ins, kept across sessions: smaller motion, break nudges, a chirp when it calls you, a name
+// and colour per project, and which hat (auto: the one the date calls for).
+type Prefs = { calm: boolean; breaks: boolean; sound: boolean; perProject: boolean; outfit: 'auto' | 'none' | Outfit }
+type Project = { name?: string; color?: string }
 
 const LINES: Record<Mood, string[]> = {
   idle: ['is waiting for you', 'is vibing', 'is counting pixels', 'is guarding your repo', 'is humming quietly'],
@@ -29,6 +35,7 @@ const LINES: Record<Mood, string[]> = {
   reading: ['is reading along…', 'is peeking at what you type 👀', 'is following every keystroke', 'is taking notes'],
   wince: ['winces at the typo', 'pretends not to see that', 'says: backspace, backspace'],
   shocked: ['gasps: where did it all go?!', 'is shocked by the delete', 'clutches its pixels'],
+  calling: ['wants your attention!', 'is waving at you 👋'],
 }
 
 const pick = (list: readonly string[]) => list[Math.floor(Math.random() * list.length)]!
@@ -48,8 +55,30 @@ let lastHatchAt = 0
 let lineTwoLayout: Layout | undefined
 const miniOf = new Map<string, string>()
 
-export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean): PetView {
-  return { mood, line, name: pet.name, color: previewColor ?? colorName(pet.color) ?? defaultColor, isHidden, meter, minis }
+let prefs: Prefs = { calm: false, breaks: false, sound: false, perProject: false, outfit: 'auto' }
+// The session's project, and the names and colours given per project.
+let cwd = ''
+let projects: Record<string, Project> = {}
+// The clock as of the last tick, for what the date decides (today's hat), and the person's UTC
+// offset in minutes: asked of the system once (`date +%z`), since the sandbox's own time zone
+// may not be theirs; JavaScript's guess until then, or where there's no `date`.
+let today = 0
+let utcOffsetMin = -new Date().getTimezoneOffset()
+
+export function parseOffset(text: string): number | undefined {
+  const m = /^([+-])(\d{2})(\d{2})$/.exec(text.trim())
+  return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : undefined
+}
+
+const project = () => (prefs.perProject ? projects[cwd] : undefined)
+const nameNow = (pet: Pet) => project()?.name ?? pet.name
+// Per project, a project with no colour of its own still gets a steady one, so windows tell apart.
+const colorNow = (pet: Pet) => previewColor ?? (prefs.perProject ? colorName(project()?.color) ?? miniColor(cwd, '') : colorName(pet.color) ?? defaultColor)
+// Until the clock is first read there's no date to dress for.
+const outfitNow = (pet: Pet): Outfit | undefined => (prefs.outfit === 'auto' ? (today ? outfitFor(today, pet.born, utcOffsetMin) : undefined) : prefs.outfit === 'none' ? undefined : prefs.outfit)
+
+export function viewOf(pet: Pet, mood: Mood, line: string, isHidden: boolean, tone: Tone = 'plain'): PetView {
+  return { mood, line, name: nameNow(pet), color: colorNow(pet), isHidden, meter, minis, tone, outfit: outfitNow(pet) ?? 'none', calm: prefs.calm }
 }
 
 const view = atom({ plugin: 'pixel-pet', key: 'view' } as const, viewOf({ name: 'Bit', born: 0, turns: 0, pets: 0 }, 'sleepy', 'is fast asleep… zzz', false))
@@ -75,24 +104,94 @@ let theme: 'dark' | 'light' = 'dark'
 // Who bills the tokens when no plan limits come back: the API, or a cloud provider.
 let provider: Source = 'api'
 // A line stays up at least this long, so a burst of tool calls reads as a story, not a flicker.
-const HOLD_MS = 900
+const HOLD_MS = 1200
 let lineShownAt = 0
 let pendingLine: string | undefined
 let isLineQueued = false
+
+// The turn in progress. Narration tells each new kind of work once (five reads in a row are one
+// line), and once a turn runs long it settles into one quiet summary, refreshed now and then, so
+// it never becomes a stream to tune out. What matters still breaks through at once: tests passing
+// or failing, a push, a broken build, and anything that needs you.
+const FOCUS_AFTER_STEPS = 12
+const FOCUS_AFTER_MS = 40_000
+const SUMMARY_EVERY_MS = 10_000
+let turnAt = 0
+let steps = 0
+let lastKind: string | undefined
+const touched = new Set<string>()
+let lastSummaryAt = -Infinity
+
+// Calling you: a turn that ran this long has finished, or Claude waits on you; it keeps waving
+// until you're back (any key, a prompt) or this long has passed.
+const LONG_TURN_MS = 30_000
+const CALL_MS = 5 * 60_000
+
+// Breaks (opt-in): a stretch after two hours with no ten-minute pause, then hourly; and once a
+// night after midnight, a reminder to sleep.
+const BREAK_AFTER_MS = 2 * 3600_000
+const NUDGE_EVERY_MS = 3600_000
+const PAUSE_MS = 10 * 60_000
+let workStart = 0
+let lastNudgeAt = 0
+let nightNudgedOn = ''
+
+function active(now: number) {
+  if (!workStart || now - lastActive > PAUSE_MS) workStart = now
+  lastActive = now
+}
 
 function baseMood(now: number): Mood {
   if (isWorking) return 'working'
   return now - lastActive > SLEEP_AFTER_MS ? 'sleepy' : 'idle'
 }
 
-async function setMood($: EngineInterface, next: Mood, forMs = 0) {
+async function setMood($: EngineInterface, next: Mood, forMs = 0, line?: string, tone: Tone = 'plain') {
   const now = await $.clock.now()
   moodUntil = forMs ? now + forMs : 0
-  if (next === mood && !forMs) return
+  if (next === mood && !forMs && line === undefined) return
   mood = next
   lineShownAt = now
-  const line = next === 'working' ? 'is thinking… 💭' : next === 'idle' && (meter.percent ?? 0) >= 80 ? `is stuffed with tokens (${meter.percent}% context)` : pick(LINES[next])
-  await update($, view, current => viewOf(pet, next, line, current.isHidden))
+  lastLine = line ?? (next === 'working' ? 'is thinking… 💭' : next === 'idle' && (meter.percent ?? 0) >= 80 ? `is stuffed with tokens (${meter.percent}% context)` : pick(LINES[next]))
+  await update($, view, current => viewOf(pet, next, lastLine, current.isHidden, tone))
+}
+
+// News that can't wait for the line's hold: shown at once, in its colour, with the mood that fits,
+// and held a few seconds so the next bit of narration doesn't push it straight off.
+async function announce($: EngineInterface, next: Mood, line: string, tone: Tone, forMs: number) {
+  pendingLine = undefined
+  await setMood($, next, forMs, line, tone)
+  lineShownAt += Math.min(forMs, 5000) - HOLD_MS
+}
+
+// A plan limit getting close: one calm line as it crosses 80%, another at 95%, nothing more (no
+// mood, no waving, no sound); a window that resets re-arms it. Undefined when there's nothing new.
+const LIMIT_NAMES: Record<string, string> = { five_hour: '5-hour limit', seven_day: 'weekly limit', seven_day_opus: 'weekly Opus limit' }
+const NOTICE_AT = [80, 95]
+const notedLimits = new Set<string>()
+
+export function limitNotice(limits: readonly { kind: string; percent: number; resetsAt?: string }[], noted: Set<string>, now: number): string | undefined {
+  let line: string | undefined
+  for (const limit of limits) {
+    const name = LIMIT_NAMES[limit.kind]
+    if (!name) continue
+    for (const at of NOTICE_AT) {
+      const key = `${limit.kind}:${at}`
+      if (limit.percent < at) noted.delete(key)
+      else if (!noted.has(key)) {
+        noted.add(key)
+        const reset = resetIn(limit.resetsAt, now)
+        line = `notes your ${name} is at ${Math.round(limit.percent)}%${reset ? ` · resets in ${reset}` : ''}`
+      }
+    }
+  }
+  return line
+}
+
+// It calls you over: waves with a "!" beside it, and chirps if you asked it to.
+async function call($: EngineInterface, line: string, tone: Tone) {
+  await announce($, 'calling', line, tone, CALL_MS)
+  if (prefs.sound) $.audio.play({ asset: 'assets/chirp.wav' }, { gain: 0.6 }).catch(() => undefined)
 }
 
 type Reading = { context: { percent?: number; tokens?: number; window: number }; cost?: { usd: number }; rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[] }
@@ -120,7 +219,14 @@ async function setMeter($: EngineInterface, reading: Reading) {
   if (source) next.source = source
   meter = next
   await update($, view, current => ({ ...current, meter }))
+  // Asleep, it leaves the notice for when it's up; the meter shows the number either way.
+  if (mood === 'sleepy' || mood === 'dozing') return
+  const notice = limitNotice(meter.limits ?? [], notedLimits, await $.clock.now())
+  if (notice) await announce($, mood, notice, 'ask', 6000)
 }
+
+// How worn out a full context makes it: nothing until 60%, slowest at 95%.
+export const tiredness = (percent: number | undefined) => Math.min(1, Math.max(0, ((percent ?? 0) - 60) / 35))
 
 // Show a working line, holding the current one for HOLD_MS first; only the latest waiting line
 // is kept, so a burst of calls skips straight to what's happening now.
@@ -142,7 +248,40 @@ async function say($: EngineInterface, line: string) {
   }
   lineShownAt = now
   lastLine = line
-  await update($, view, current => (current.line === line ? current : { ...current, line }))
+  await update($, view, current => (current.line === line && current.tone === 'plain' ? current : { ...current, line, tone: 'plain' as const }))
+}
+
+// One step of Claude's work: a line when the kind of work changes, or the quiet summary once deep in.
+async function narrate($: EngineInterface, tool: string, args: Record<string, unknown>) {
+  const now = await $.clock.now()
+  steps++
+  const kind = actionKind(tool, args)
+  if (kind === 'edit' && typeof args.file_path === 'string') touched.add(args.file_path)
+  // A passing mood (a test result, a stretch) has the line until it wears off.
+  if (moodUntil > now && mood !== 'working') return
+  if (steps > FOCUS_AFTER_STEPS || now - turnAt > FOCUS_AFTER_MS) {
+    if (now - lastSummaryAt < SUMMARY_EVERY_MS) return
+    lastSummaryAt = now
+    return say($, focusLine(steps, touched.size))
+  }
+  if (kind === undefined || kind === lastKind) return
+  lastKind = kind
+  const line = actionLine(tool, args)
+  if (line) await say($, line)
+}
+
+// What a finished call means to the pet: back to work after a permission, a cheer or a groan
+// for a result worth one, a flinch at any other error.
+async function afterCall($: EngineInterface, tool: string, args: Record<string, unknown>, isError: boolean, text: string) {
+  if (mood === 'calling' && isWorking) await setMood($, 'working')
+  const outcome = outcomeOf(tool, args, isError, text)
+  if (outcome) {
+    await announce($, outcome.tone === 'good' ? 'happy' : 'oops', outcome.line, outcome.tone, outcome.tone === 'good' ? 4000 : 6000)
+    if (outcome.tone === 'good' && /tests? pass/.test(outcome.line)) {
+      pet = { ...pet, greens: (pet.greens ?? 0) + 1 }
+      await $.store.set('pet', pet)
+    }
+  } else if (isError) await setMood($, 'oops', 3000, lastLine) // a flinch, not news: the line stays
 }
 
 // React first, save after: the blush shouldn't wait on a disk write.
@@ -153,6 +292,15 @@ async function petIt($: EngineInterface) {
 }
 
 const COLOR_COMMAND = /^\s*\/pet\s+colou?r\s+(\S*)$/i
+const PET_COMMAND = /^\s*\/pet\s+(\S*)$/i
+const OUTFIT_COMMAND = /^\s*\/pet\s+outfit\s+(\S*)$/i
+// The occasion a hat is for works as its name too: `/pet outfit christmas`.
+const OCCASIONS: Record<string, Outfit> = { halloween: 'pumpkin', christmas: 'santa', xmas: 'santa', birthday: 'party', newyear: 'party' }
+const VERBS: [string, string][] = [
+  ['color', 'change its colour'], ['rename', 'give it a new name'], ['outfit', 'auto, none, pumpkin, santa or party'], ['card', 'save a picture of it to share'],
+  ['calm', 'keep its motion small (on/off)'], ['breaks', 'nudge me to take breaks (on/off)'], ['sound', 'chirp when it needs me (on/off)'],
+  ['project', 'its own name and colour in each project (on/off)'], ['hide', 'tuck it away'], ['show', 'bring it back'],
+]
 
 // While the draft reads `/pet color <partial>`, the colour to try on: the exact name, else the
 // first that starts with what's typed.
@@ -191,10 +339,11 @@ export function reactionTo(e: { text: string; cursor: number; start: number; end
 }
 
 // Typing moods hold while the keys keep coming and fade ~2s after the last one. Only a change of
-// mood, gaze or words touches the band, so a run of keystrokes costs a handful of redraws.
+// mood, gaze or words touches the band, so a run of keystrokes costs a handful of redraws. Typing
+// also answers a pet that was calling you.
 async function react($: EngineInterface, reaction: NonNullable<ReturnType<typeof reactionTo>>) {
   const now = await $.clock.now()
-  lastActive = now
+  active(now)
   // Asleep or nodding off, the first keys wake it gently; reactions resume once it's up.
   if (mood === 'sleepy' || mood === 'dozing') return wake($)
   if (mood === 'waking' && now < moodUntil) return
@@ -217,17 +366,36 @@ async function wake($: EngineInterface) {
   await setMood($, 'waking', WAKE_MS)
 }
 
-// A passing mood (happy, oops, loved, waking) wears off; a long quiet nods off into sleep, through a
-// few heavy-lidded seconds of dozing. The motion itself runs on the surface's clock or in the SVG.
+const isLateNight = (now: number) => localDate(now, utcOffsetMin).getUTCHours() < 5
+const dayOf = (now: number) => localDate(now, utcOffsetMin).toISOString().slice(0, 10)
+
+// A passing mood (happy, oops, loved, waking, calling) wears off; a long quiet nods off into sleep,
+// through a few heavy-lidded seconds of dozing. The motion itself runs on the surface's clock or in
+// the SVG. Breaks get their nudge here too.
 async function checkMood($: EngineInterface) {
   const now = await $.clock.now()
+  const wasOutfit = outfitNow(pet)
+  today = now
+  if (outfitNow(pet) !== wasOutfit) await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
   if (moodUntil && now > moodUntil) {
     const next = baseMood(now)
     // Drifting off from an awake mood goes through dozing first.
     if (next === 'sleepy' && mood !== 'dozing') await setMood($, 'dozing', DOZE_MS)
     else await setMood($, next)
   } else if (mood === 'idle' && baseMood(now) === 'sleepy') await setMood($, 'dozing', DOZE_MS)
+  else if (prefs.breaks && !moodUntil && (mood === 'idle' || mood === 'working')) await nudge($, now)
   await tendMinis($, now)
+}
+
+async function nudge($: EngineInterface, now: number) {
+  if (now - workStart >= BREAK_AFTER_MS && now - lastNudgeAt >= NUDGE_EVERY_MS) {
+    lastNudgeAt = now
+    const hours = Math.floor((now - workStart) / 3600_000)
+    await announce($, 'waking', `has been at it for ${hours}h · stretch break? 🧘`, 'ask', WAKE_MS * 2)
+  } else if (mood === 'idle' && isLateNight(now) && nightNudgedOn !== dayOf(now)) {
+    nightNudgedOn = dayOf(now)
+    await announce($, 'dozing', "yawns · it's late, don't forget to sleep 🌙", 'plain', DOZE_MS)
+  }
 }
 
 // Helpers whose agents have finished wave bye; ones that have waved long enough leave.
@@ -248,7 +416,7 @@ async function tendMinis($: EngineInterface, now: number) {
 
 async function hatch($: EngineInterface, id: string, type: string) {
   const name = type.split(':').pop() ?? type
-  const color = (await definedColor($, name)) ?? miniColor(id, colorName(pet.color) ?? defaultColor)
+  const color = (await definedColor($, name)) ?? miniColor(id, colorNow(pet))
   const now = await $.clock.now()
   const at = Math.max(now, lastHatchAt + HATCH_GAP_MS)
   lastHatchAt = at
@@ -256,6 +424,8 @@ async function hatch($: EngineInterface, id: string, type: string) {
   await update($, view, current => ({ ...current, minis }))
   // A queued helper's turn: draw again when it's due, so its slot starts opening on time.
   if (at > now) $.clock.after(at - now, () => void update($, view, current => ({ ...current, minis })).catch(() => undefined))
+  pet = { ...pet, helpers: (pet.helpers ?? 0) + 1 }
+  await $.store.set('pet', pet)
 }
 
 async function sayBye($: EngineInterface, id: string) {
@@ -271,8 +441,8 @@ async function sayBye($: EngineInterface, id: string) {
 async function definedColor($: EngineInterface, name: string): Promise<string | undefined> {
   if (!/^[\w-]+$/.test(name)) return undefined
   const home = await $.env.get('HOME').catch(() => undefined)
-  const cwd = await $.session.cwd().catch(() => undefined)
-  for (const dir of [cwd && `${cwd}/.claude/agents`, home && `${home}/.claude/agents`]) {
+  const dir0 = await $.session.cwd().catch(() => undefined)
+  for (const dir of [dir0 && `${dir0}/.claude/agents`, home && `${home}/.claude/agents`]) {
     if (!dir) continue
     const text = await $.fs.read(`${dir}/${name}.md`).catch(() => undefined)
     const color = text ? colorFromDefinition(text) : undefined
@@ -281,16 +451,41 @@ async function definedColor($: EngineInterface, name: string): Promise<string | 
   return undefined
 }
 
+const baseName = (path: string) => path.split('/').filter(Boolean).pop() ?? path
+const onOff = (arg: string | undefined, current: boolean) => (arg === 'on' ? true : arg === 'off' ? false : !current)
+
+// `/pet card`: the picture goes to Downloads (or home), named after the pet.
+async function saveCard($: EngineInterface): Promise<string> {
+  const now = await $.clock.now()
+  const home = await $.env.get('HOME').catch(() => undefined)
+  if (!home) return 'No home folder to save the card in.'
+  const dir = (await $.fs.exists(`${home}/Downloads`).catch(() => false)) ? `${home}/Downloads` : home
+  const name = nameNow(pet)
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'pet'
+  const path = `${dir}/${slug}-pixel-pet.svg`
+  await $.fs.write(path, petCard({
+    name, color: colorNow(pet), outfit: outfitNow(pet), days: Math.max(0, Math.floor((now - pet.born) / 86_400_000)),
+    turns: pet.turns, pets: pet.pets, helpers: pet.helpers ?? 0, greens: pet.greens ?? 0,
+  }))
+  return `Saved ${name}'s card to ${path.replace(home, '~')}. Open it in a browser to share it.`
+}
+
 export const register: Register = (on, options) => {
   defaultColor = colorName(String(options.color)) ?? DEFAULT_COLOR
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'pet', description: 'Your pixel pet: stats, or show / hide / rename <name> / color <name>', argumentHint: '[show|hide|rename <name>|color <name>]' })
+    await $.command.register({ name: 'pet', description: 'Your pixel pet: stats, or color / rename / outfit / card / calm / breaks / sound / project / hide / show', argumentHint: '[color|rename|outfit|card|calm|breaks|sound|project|hide|show]' })
     const now = await $.clock.now()
+    today = now
+    cwd = e.cwd
+    const offset = await $.process.run(['date', '+%z'], { timeoutMs: 2000 }).then(r => parseOffset(r.stdout)).catch(() => undefined)
+    if (offset !== undefined) utcOffsetMin = offset
     const saved = (await $.store.get('pet')) as Pet | undefined
     pet = saved ?? { name: String(options.name ?? 'Bit'), born: now, turns: 0, pets: 0 }
     if (!saved) await $.store.set('pet', pet)
-    lastActive = now
+    prefs = { ...prefs, ...((await $.store.get('prefs')) as Partial<Prefs> | undefined) }
+    projects = ((await $.store.get('projects')) as Record<string, Project> | undefined) ?? {}
+    active(now)
     // Which provider bills the tokens, from the switches Claude Code reads (never a key).
     if (await $.env.get('CLAUDE_CODE_USE_BEDROCK').catch(() => undefined)) provider = 'bedrock'
     else if (await $.env.get('CLAUDE_CODE_USE_VERTEX').catch(() => undefined)) provider = 'vertex'
@@ -318,13 +513,16 @@ export const register: Register = (on, options) => {
     return box
   })
 
-  // The colour names as typeahead rows while the colour word is being typed, each with its swatch.
+  // Typeahead for /pet: its verbs, the colour names (each with its swatch), and the hats.
   on('prompt.autocomplete', async ($, e, next) => {
     const offered = await next(e)
-    if (!COLOR_COMMAND.test(e.text.slice(0, e.cursor))) return offered
+    const before = e.text.slice(0, e.cursor)
     const partial = e.token.toLowerCase()
-    const rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: hex(COLORS[name]!.body) }))
-    return { suggestions: [...offered.suggestions, ...rows] }
+    let rows: { text: string; description?: string }[] = []
+    if (COLOR_COMMAND.test(before)) rows = COLOR_NAMES.filter(name => name.startsWith(partial)).map(name => ({ text: name, description: hex(COLORS[name]!.body) }))
+    else if (OUTFIT_COMMAND.test(before)) rows = ['auto', 'none', ...OUTFITS].filter(name => name.startsWith(partial)).map(text => ({ text }))
+    else if (PET_COMMAND.test(before)) rows = VERBS.filter(([verb]) => verb.startsWith(partial)).map(([text, description]) => ({ text, description }))
+    return rows.length ? { suggestions: [...offered.suggestions, ...rows] } : offered
   })
 
   // A click on the sprite (terminal) or on the layer over it (desktop) pets it.
@@ -334,23 +532,28 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    lastActive = await $.clock.now()
+    active(await $.clock.now())
     look = 0
     if (mood === 'sleepy' || mood === 'dozing') await wake($)
-    else if (mood === 'reading' || mood === 'wince' || mood === 'shocked') await setMood($, 'idle')
+    else if (mood === 'reading' || mood === 'wince' || mood === 'shocked' || mood === 'calling') await setMood($, 'idle')
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
     isWorking = true
-    lastActive = await $.clock.now()
+    const now = await $.clock.now()
+    active(now)
+    turnAt = now
+    steps = 0
+    lastKind = undefined
+    touched.clear()
+    lastSummaryAt = -Infinity
     // Asleep, it wakes first; once up, the waking mood wears off into working.
     if (mood === 'sleepy' || mood === 'dozing') await wake($)
-    else if (!moodUntil) await setMood($, 'working')
+    else if (!moodUntil || mood === 'calling') await setMood($, 'working')
     return next(e)
   })
 
-  // A sentence for each kind of action as it starts; the pet keeps its working mood.
   // Each subagent hatches a little helper beside the pet, in its own colour; it waves bye when done.
   on('agent.spawn', async ($, e, next) => {
     if (!e.parentAgentId) say($, `sent ${e.subagentType.split(':').pop()} off on a side quest 🧭`).catch(() => undefined)
@@ -361,13 +564,18 @@ export const register: Register = (on, options) => {
     return started
   })
 
+  // Tidying its memory; once the context is light again, a big stretch.
   on('session.compact', async ($, e, next) => {
     say($, 'is tidying its memory 🧹').catch(() => undefined)
-    return next(e)
+    const compacted = await next(e)
+    await announce($, 'waking', 'stretches · feels light again ✨', 'good', WAKE_MS).catch(() => undefined)
+    return compacted
   })
 
+  // Claude is waiting on you: a permission, a question, or your next message.
   on('classic.Notification', async ($, e, next) => {
-    if (/permission/i.test(e.notification_type)) say($, 'is waiting for your OK ✋').catch(() => undefined)
+    if (/permission|elicitation/i.test(e.notification_type)) call($, 'needs your OK ✋', 'ask').catch(() => undefined)
+    else if (/idle/i.test(e.notification_type) && mood !== 'calling' && mood !== 'sleepy') call($, 'is waiting for you 💬', 'ask').catch(() => undefined)
     return next(e)
   })
 
@@ -379,24 +587,26 @@ export const register: Register = (on, options) => {
       return done
     }
     isWorking = false
-    lastActive = await $.clock.now()
+    const now = await $.clock.now()
+    active(now)
     if (e.isAborted) {
       await setMood($, 'idle')
       return done
     }
     pet = { ...pet, turns: pet.turns + 1 }
     await $.store.set('pet', pet)
-    await setMood($, 'happy', 6000)
+    // A long turn calls you back to look; a quick one just gets a happy bounce.
+    if (now - turnAt >= LONG_TURN_MS) await call($, `is done${touched.size ? ` · ${touched.size} file${touched.size === 1 ? '' : 's'} changed` : ''} · come take a look 👀`, 'good')
+    else await setMood($, 'happy', 6000)
     return done
   })
 
   on('tool.call', async ($, e, next) => {
-    if (e.agentId === undefined && isWorking) {
-      const line = actionLine(String(e.tool), e as unknown as Record<string, unknown>)
-      if (line) say($, line).catch(() => undefined)
-    }
+    const isMine = e.agentId === undefined
+    const args = e as unknown as Record<string, unknown>
+    if (isMine && isWorking) narrate($, String(e.tool), args).catch(() => undefined)
     const ran = await next(e)
-    if (ran.deny === undefined && ran.isError === true && e.agentId === undefined) await setMood($, 'oops', 5000)
+    if (isMine && ran.deny === undefined) await afterCall($, String(e.tool), args, ran.isError === true, typeof ran.text === 'string' ? ran.text : '').catch(() => undefined)
     return ran
   })
 
@@ -408,34 +618,77 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'pet' }, async ($, e) => {
     const [verb, ...rest] = e.args.trim().split(/\s+/)
+    const arg = rest[0]?.toLowerCase()
+    const redraw = () => update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden, current.tone))
+    const savePrefs = async (next: Partial<Prefs>) => {
+      prefs = { ...prefs, ...next }
+      await $.store.set('prefs', prefs)
+      await redraw()
+    }
+    const where = prefs.perProject ? ` in ${baseName(cwd)}` : ''
     if (verb === 'hide' || verb === 'show') {
       await update($, view, current => ({ ...current, isHidden: verb === 'hide' }))
-      return { text: verb === 'hide' ? `${pet.name} is resting off-screen. /pet show brings it back.` : `${pet.name} is back!` }
+      return { text: verb === 'hide' ? `${nameNow(pet)} is resting off-screen. /pet show brings it back.` : `${nameNow(pet)} is back!` }
     }
     if (verb === 'color' || verb === 'colour') {
-      const choice = colorName(rest[0])
+      const choice = colorName(arg)
       if (!choice) {
         await preview($, undefined)
         return { text: `Colours: ${COLOR_NAMES.join(', ')}. Try /pet color pink.` }
       }
       previewColor = undefined
-      pet = { ...pet, color: choice }
-      await $.store.set('pet', pet)
-      await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
-      return { text: `${pet.name} is now ${choice}.` }
+      if (prefs.perProject) {
+        projects = { ...projects, [cwd]: { ...projects[cwd], color: choice } }
+        await $.store.set('projects', projects)
+      } else {
+        pet = { ...pet, color: choice }
+        await $.store.set('pet', pet)
+      }
+      await redraw()
+      return { text: `${nameNow(pet)} is now ${choice}${where}.` }
     }
     if (verb === 'rename' && rest.length) {
-      pet = { ...pet, name: rest.join(' ').slice(0, 24) }
-      await $.store.set('pet', pet)
-      await update($, view, current => viewOf(pet, current.mood, current.line, current.isHidden))
-      return { text: `Your pet is now called ${pet.name}.` }
+      const name = rest.join(' ').slice(0, 24)
+      if (prefs.perProject) {
+        projects = { ...projects, [cwd]: { ...projects[cwd], name } }
+        await $.store.set('projects', projects)
+      } else {
+        pet = { ...pet, name }
+        await $.store.set('pet', pet)
+      }
+      await redraw()
+      return { text: `Your pet is now called ${name}${where}.` }
+    }
+    if (verb === 'outfit') {
+      const named = OCCASIONS[arg ?? ''] ?? arg
+      const choice = named === 'auto' || named === 'none' || OUTFITS.includes(named as Outfit) ? (named as Prefs['outfit']) : undefined
+      if (!choice) return { text: `Outfits: auto (dresses up for Halloween, Christmas, New Year and its birthday), none, ${OUTFITS.join(', ')}.` }
+      await savePrefs({ outfit: choice })
+      const wearing = outfitNow(pet)
+      return { text: choice === 'auto' ? `${nameNow(pet)} dresses for the date${wearing ? `: today it's wearing a ${wearing} hat` : ''}.` : choice === 'none' ? 'No hats.' : `${nameNow(pet)} is wearing a ${choice} hat until you change it (/pet outfit auto goes back to dressing for the date).` }
+    }
+    if (verb === 'card') return { text: await saveCard($) }
+    if (verb === 'calm' || verb === 'breaks' || verb === 'sound' || verb === 'project') {
+      const key = verb === 'project' ? 'perProject' : verb
+      const value = onOff(arg, prefs[key])
+      const change: Partial<Prefs> = {}
+      change[key] = value
+      await savePrefs(change)
+      const said: Record<string, string> = {
+        calm: value ? 'Calm: it keeps its motion small and lines fade instead of sliding.' : 'Calm off: full motion.',
+        breaks: value ? 'Breaks on: a stretch after two hours without a pause, and a nudge to sleep after midnight.' : 'Breaks off.',
+        sound: value ? 'Sound on: it chirps when it calls you.' : 'Sound off.',
+        project: value ? `Per project on: each project has its own name and colour (this one: ${nameNow(pet)}, ${colorNow(pet)}). /pet rename and /pet color now change it here only.` : 'Per project off: one pet everywhere.',
+      }
+      return { text: said[verb]! }
     }
     const days = Math.max(0, Math.floor(((await $.clock.now()) - pet.born) / 86_400_000))
+    const toggles = (['calm', 'breaks', 'sound', 'perProject'] as const).filter(k => prefs[k]).map(k => (k === 'perProject' ? 'per project' : k))
     return {
       text: [
-        `${pet.name} · ${colorName(pet.color) ?? defaultColor}`,
-        `${pet.turns} turns together · petted ${pet.pets} times · ${days} days old`,
-        'Click it to pet it. /pet color <name> changes its colour, /pet rename <name> its name.',
+        `${nameNow(pet)} · ${colorNow(pet)}${outfitNow(pet) ? ` · ${outfitNow(pet)} hat` : ''}${toggles.length ? ` · ${toggles.join(', ')}` : ''}`,
+        `${pet.turns} turns together · petted ${pet.pets} times · ${pet.helpers ?? 0} helpers hatched · ${pet.greens ?? 0} green test runs · ${days} days old`,
+        'Click it to pet it. /pet color, rename, outfit, card, calm, breaks, sound, project.',
       ].join('\n'),
     }
   })
@@ -447,6 +700,11 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const percent = current.meter.percent
     const parts = segments(current.meter, now)
+    const tired = tiredness(percent)
+    const outfit = current.outfit === 'none' ? undefined : current.outfit
+    const colors = LINE_COLORS[theme]
+    // Calm keeps the meter's shimmer still too.
+    const isShimmering = isWorking && !current.calm
     // The helpers' ages at this draw: each one's story (pop in, bob, wave, fade) runs from its age.
     // Newest first, so a new helper takes the leftmost slot and pushes the rest along; one still
     // queued has a negative age and no slot yet.
@@ -466,9 +724,9 @@ export const register: Register = (on, options) => {
     // with their motion built in.
     if (e.surface === 'terminal') {
       const { Client } = $.ui.resolve(e)
-      const pet: PetViewProps = { mood: current.mood, look, color: current.color }
-      const status: StatusViewProps = { name: current.name, line: current.line }
-      const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), segments: parts, isWorking, width: METER_CELLS }
+      const pet: PetViewProps = { mood: current.mood, look, color: current.color, outfit: current.outfit, tired, calm: current.calm }
+      const status: StatusViewProps = { name: current.name, line: current.line, calm: current.calm, ...(current.tone === 'plain' ? {} : { color: toneColor(colors, current.tone) }) }
+      const gauge: MeterViewProps = { ...(percent === undefined ? {} : { percent }), segments: parts, isWorking: isShimmering, width: METER_CELLS }
       return (
         <Box gap={2} alignItems="center">
           <Client key="pet" module="./pet-view.tsx" width={10} height={4} props={pet} />
@@ -510,23 +768,25 @@ export const register: Register = (on, options) => {
       minis: helpers,
       ...(percent === undefined ? {} : { percent }),
       from,
-      isWorking,
+      isWorking: isShimmering,
       limits: current.meter.limits ?? [],
       ...(resets ? { resets } : {}),
       ...(bill ? { bill } : {}),
       hasInfo: card.length > 0,
-      tones: { ...TONES[theme], text: LINE_COLORS[theme].text },
+      tones: { ...TONES[theme], text: colors.text },
+      calm: current.calm,
     }, lineTwoLayout)
     lineTwoLayout = two.layout
     const helpersAlt = current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`)
+    const style = { outfit, tired, calm: current.calm }
     return (
       <Box gap={2} alignItems="center">
         <Box>
-          <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color)} alt={`${current.name}, a pixel pet, ${current.mood}`} width={50} height={40} />
+          <Svg source={petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color, 5, style)} alt={`${current.name}, a pixel pet, ${current.mood}${outfit ? `, wearing a ${outfit} hat` : ''}`} width={50} height={40} />
           {hit}
         </Box>
         <Box flexDirection="column" justifyContent="center">
-          <Svg source={lineSvg(current.name, current.line, previous, LINE_COLORS[theme])} alt={`${current.name} ${current.line}`} width={lineWidth(current.name, current.line, previous)} height={20} />
+          <Svg source={lineSvg(current.name, current.line, previous, colors, { tone: current.tone, calm: current.calm })} alt={`${current.name} ${current.line}`} width={lineWidth(current.name, current.line, previous)} height={20} />
           <Box key="meter-row">
             <Svg source={two.svg} alt={[...helpersAlt, ...card].join('; ') || 'context meter'} width={two.width} height={26} />
             {details}
