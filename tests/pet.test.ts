@@ -524,6 +524,10 @@ test('scenes: nine worlds drawn in code, seamless for scrolling; auto by the clo
   expect(habitatSvg('city', true, pet)).toContain('repeatCount="indefinite"')
   expect(habitatSvg('city', false, pet)).not.toContain('to="-')
   expect(habitatSvg('city', false, pet)).toContain('<svg x="13" y="12"')
+  // Smooth rounded corners; the scroll carries on from where it was, moving or stopped.
+  expect(habitatSvg('city', false, pet)).toContain('rx="12" shape-rendering="geometricPrecision"')
+  expect(habitatSvg('meadow', true, pet, 1234)).toContain('begin="-1234ms"')
+  expect(habitatSvg('meadow', false, pet, 1234)).toMatch(/transform="translate\(-[0-9.]+ 0\)"/)
   // Every scene fits in one drawing (the app refuses an Svg past 131072 characters), even moving.
   for (const scene of SCENES) expect(habitatSvg(scene, true, petSvg('working', { mood: 'idle', color: 'teal' }, 0, 'teal', 5, { outfit: 'santa' })).length).toBeLessThan(110_000)
   // The card stands the pet in its world.
@@ -534,6 +538,8 @@ test('/pet scene picks a world, and the band draws the pet in it on both surface
   await setUp($, on, on => on('command.run', () => ({})))
   const run = (args: string) => $.command.run({ command: 'pet', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
   expect((await run('scene jungle')).text).toContain('lives in the jungle')
+  expect((await run('scene moon')).text).toContain('lives on the moon')
+  await run('scene jungle')
   const desk = await $.ui.mount({ plugin: 'pixel-pet', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   expect(JSON.stringify(await desk.drawn())).toContain('in the jungle')
   const term = await $.ui.mount({ plugin: 'pixel-pet', surface: 'terminal', component: 'AbovePrompt', props: BAND })

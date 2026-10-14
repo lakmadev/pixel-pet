@@ -99,6 +99,10 @@ const SCENE: Record<Scene, { ground: number; layers: Layer[] }> = {
 }
 
 export const isScene = (name: string | undefined): name is Scene => SCENES.includes(name as Scene)
+
+// Where the pet is, said naturally: "on the moon", "in the city at night".
+const WHERE: Record<Scene, string> = { meadow: 'in a meadow', desert: 'in the desert', jungle: 'in the jungle', city: 'in the city', skyline: 'in the city at night', snow: 'in the snow', moon: 'on the moon', savanna: 'on the savanna', lava: 'by the lava', mountains: 'in the mountains' }
+export const whereIn = (scene: Scene) => WHERE[scene]
 export const groundOf = (scene: Scene) => SCENE[scene].ground
 
 // A steady random from a seed, so a scene looks the same every time.
@@ -284,16 +288,20 @@ function layerRects(grid: Grid, px: number, copies: number): string {
 }
 
 // Desktop and the card: the scene as SVG layers. Moving, each layer slides left by its period
-// forever at its own speed (parallax); still, it simply stands.
-export function sceneSvgLayers(scene: Scene, width: number, height: number, px: number, isMoving: boolean, period = 64, pxPerSecond = 14): string {
+// forever at its own speed (parallax); still, it stands. `scrolledMs` is how long the scenery has
+// been moving in all: each layer starts from where that leaves it, so a redraw (a new status
+// line) or a stop carries on from the same spot instead of jumping back to the start.
+export function sceneSvgLayers(scene: Scene, width: number, height: number, px: number, isMoving: boolean, period = 64, pxPerSecond = 14, scrolledMs = 0): string {
   const { grids, speeds } = sceneLayers(scene, period, height)
   const copies = Math.ceil(width / period) + 1
   return grids.map((grid, l) => {
     const speed = speeds[l]!
-    const slide = isMoving && speed > 0
-      ? `<animateTransform attributeName="transform" type="translate" from="0 0" to="${-period * px} 0" dur="${Math.round((period / (pxPerSecond * speed)) * 1000)}ms" repeatCount="indefinite"/>`
-      : ''
-    return `<g>${slide}${layerRects(grid, px, speed > 0 ? copies : Math.ceil(width / period))}</g>`
+    const rects = layerRects(grid, px, speed > 0 ? copies : Math.ceil(width / period))
+    if (speed <= 0) return `<g>${rects}</g>`
+    const dur = Math.round((period / (pxPerSecond * speed)) * 1000)
+    const phase = scrolledMs % dur
+    if (!isMoving) return phase ? `<g transform="translate(${((-phase / dur) * period * px).toFixed(2)} 0)">${rects}</g>` : `<g>${rects}</g>`
+    return `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${-period * px} 0" dur="${dur}ms" begin="${-Math.round(phase)}ms" repeatCount="indefinite"/>${rects}</g>`
   }).join('')
 }
 
@@ -311,9 +319,11 @@ export function sceneFor(hour: number, isGroaning: boolean): Scene {
 // layers, so the pet seems to run through it.
 export const HABITAT_WIDTH = 76
 export const HABITAT_HEIGHT = 52
-export function habitatSvg(scene: Scene, isMoving: boolean, pet: string): string {
+// The pixels stay crisp, but the window's rounded corners are drawn smooth (a crisp-edged clip
+// would come out stepped, barely rounded).
+export function habitatSvg(scene: Scene, isMoving: boolean, pet: string, scrolledMs = 0): string {
   const inner = pet.replace('<svg ', `<svg x="${(HABITAT_WIDTH - 50) / 2}" y="${HABITAT_HEIGHT - 40}" `)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${HABITAT_WIDTH}" height="${HABITAT_HEIGHT}" viewBox="0 0 ${HABITAT_WIDTH} ${HABITAT_HEIGHT}" shape-rendering="crispEdges">`
-    + `<defs><clipPath id="habitat"><rect width="${HABITAT_WIDTH}" height="${HABITAT_HEIGHT}" rx="7"/></clipPath></defs>`
-    + `<g clip-path="url(#habitat)">${sceneSvgLayers(scene, HABITAT_WIDTH / 2, HABITAT_HEIGHT / 2, 2, isMoving)}</g>${inner}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${HABITAT_WIDTH}" height="${HABITAT_HEIGHT}" viewBox="0 0 ${HABITAT_WIDTH} ${HABITAT_HEIGHT}">`
+    + `<defs><clipPath id="habitat"><rect width="${HABITAT_WIDTH}" height="${HABITAT_HEIGHT}" rx="12" shape-rendering="geometricPrecision"/></clipPath></defs>`
+    + `<g clip-path="url(#habitat)"><g shape-rendering="crispEdges">${sceneSvgLayers(scene, HABITAT_WIDTH / 2, HABITAT_HEIGHT / 2, 2, isMoving, 64, 14, scrolledMs)}</g></g>${inner}</svg>`
 }

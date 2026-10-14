@@ -12,7 +12,7 @@ import type { Outfit } from './sprite'
 import { LINE_COLORS, actionKind, actionLine, focusLine, lineSvg, lineWidth, outcomeOf, toneColor } from './status'
 import { LEAVE_MS, colorFromDefinition, miniColor } from './mini'
 import { lineTwoSvg } from './line2'
-import { HABITAT_HEIGHT, HABITAT_WIDTH, SCENES, TIMES_OF_DAY, habitatSvg, isScene, sceneFor } from './scene'
+import { HABITAT_HEIGHT, HABITAT_WIDTH, SCENES, TIMES_OF_DAY, habitatSvg, isScene, sceneFor, whereIn } from './scene'
 import type { Scene } from './scene'
 import { HABITAT_COLUMNS, HABITAT_ROWS } from './pet-view'
 import type { Layout } from './line2'
@@ -57,6 +57,10 @@ let lastHatchAt = 0
 // Where the desktop's second line last put each helper and the bar, to glide from.
 let lineTwoLayout: Layout | undefined
 const miniOf = new Map<string, string>()
+
+// The desktop scenery's scroll so far: time moved before, and since when it's been moving now.
+let scrolledBefore = 0
+let movingSince: number | null = null
 
 let prefs: Prefs = { calm: false, breaks: false, sound: false, perProject: false, outfit: 'auto', scene: 'auto' }
 // The session's project, and the names and colours given per project.
@@ -736,7 +740,7 @@ export const register: Register = (on, options) => {
       const choice = named === 'auto' || named === 'none' || isScene(named) ? (named as Prefs['scene']) : undefined
       if (!choice) return { text: `Scenes: on (changes through the day: ${TIMES_OF_DAY.map(([, time, scene]) => `${time} ${scene}`).join(', ')}), off, or one of ${SCENES.join(', ')}.` }
       await savePrefs({ scene: choice })
-      return { text: choice === 'auto' ? `${nameNow(pet)}'s world changes through the day: ${TIMES_OF_DAY.map(([, time, scene]) => `${time} ${scene}`).join(', ')}.` : choice === 'none' ? 'No background: just the pet. /pet scene on brings it back.' : `${nameNow(pet)} now lives in the ${choice}.` }
+      return { text: choice === 'auto' ? `${nameNow(pet)}'s world changes through the day: ${TIMES_OF_DAY.map(([, time, scene]) => `${time} ${scene}`).join(', ')}.` : choice === 'none' ? 'No background: just the pet. /pet scene on brings it back.' : `${nameNow(pet)} now lives ${whereIn(choice)}.` }
     }
     if (verb === 'card') return { text: await saveCard($) }
     if (verb === 'calm' || verb === 'breaks' || verb === 'sound' || verb === 'project') {
@@ -852,12 +856,20 @@ export const register: Register = (on, options) => {
     lineTwoLayout = two.layout
     const helpersAlt = current.minis.map(m => `${m.name} helper${m.state === 'bye' ? ' waving bye' : ''}`)
     const style = { outfit, tired, calm: current.calm }
+    // How long its world has scrolled in all, so each redraw carries on from the same spot.
+    const isMoving = isWorking && !current.calm
+    if (isMoving && movingSince === null) movingSince = now
+    if (!isMoving && movingSince !== null) {
+      scrolledBefore += now - movingSince
+      movingSince = null
+    }
+    const scrolledMs = scrolledBefore + (movingSince === null ? 0 : now - movingSince)
     // The pet, standing in its world when it has one; the scenery scrolls while Claude works.
     const sprite = petSvg(current.mood, fadeFrom && now - fadeFrom.at < 500 ? fadeFrom : undefined, look, current.color, 5, style)
     const petAlt = `${current.name}, a pixel pet, ${current.mood}${outfit ? `, wearing a ${outfit} hat` : ''}`
     const petImage = current.scene === 'none'
       ? <Svg source={sprite} alt={petAlt} width={50} height={40} />
-      : <Svg source={habitatSvg(current.scene, isWorking && !current.calm, sprite)} alt={`${petAlt}, in the ${current.scene}`} width={HABITAT_WIDTH} height={HABITAT_HEIGHT} />
+      : <Svg source={habitatSvg(current.scene, isMoving, sprite, scrolledMs)} alt={`${petAlt}, ${whereIn(current.scene)}`} width={HABITAT_WIDTH} height={HABITAT_HEIGHT} />
     return (
       <Box gap={2} alignItems="center">
         <Box>
